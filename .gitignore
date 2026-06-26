@@ -1,0 +1,13 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/src/__pycache__/
+backend/**/__pycache__/
+backend/*.db
+backend/tg_manager.db
+
+# Node
+frontend/node_modules/
+
+# Env (contains secrets)
+.env
