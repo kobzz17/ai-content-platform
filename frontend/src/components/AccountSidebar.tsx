@@ -5,14 +5,20 @@ interface Props {
   selectedId: number | null;
   onSelect: (id: number) => void;
   onAddAccount: () => void;
+  onImport?: () => void;
 }
 
-export function AccountSidebar({ accounts, selectedId, onSelect, onAddAccount }: Props) {
+export function AccountSidebar({ accounts, selectedId, onSelect, onAddAccount, onImport }: Props) {
   return (
     <aside style={styles.sidebar}>
       <div style={styles.header}>
         <span style={styles.title}>Аккаунты</span>
-        <button style={styles.addBtn} onClick={onAddAccount} title="Добавить аккаунт">+</button>
+        <div style={{display:"flex", gap:4}}>
+          {onImport && (
+            <button style={{...styles.addBtn, background:"#374151", fontSize:14}} onClick={onImport} title="Импорт пакета">↑</button>
+          )}
+          <button style={styles.addBtn} onClick={onAddAccount} title="Добавить аккаунт">+</button>
+        </div>
       </div>
 
       <div style={styles.list}>

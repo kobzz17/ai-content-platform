@@ -61,3 +61,53 @@ class BotLog(Base):
     action: Mapped[str] = mapped_column(String(50))
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SessionMode(str, enum.Enum):
+    always = "always"      # runs 24/7
+    random = "random"      # randomly goes offline 1-6h between sessions
+    work_hours = "work_hours"   # active 9:00-20:00 only
+    evening = "evening"         # active 18:00-23:00 only
+
+
+class ChannelTask(Base):
+    __tablename__ = "channel_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    keywords: Mapped[str] = mapped_column(Text)              # comma-separated
+    status: Mapped[TaskStatus] = mapped_column(SAEnum(TaskStatus), default=TaskStatus.running)
+    persona: Mapped[str] = mapped_column(Text, default="Интересующийся IT-новостями читатель")
+    max_channels: Mapped[int] = mapped_column(Integer, default=5)
+    comment_probability: Mapped[int] = mapped_column(Integer, default=40)
+    reaction_probability: Mapped[int] = mapped_column(Integer, default=60)
+    check_interval: Mapped[int] = mapped_column(Integer, default=60)   # minutes
+    max_daily_actions: Mapped[int] = mapped_column(Integer, default=15)
+    session_mode: Mapped[str] = mapped_column(String(20), default=SessionMode.always)
+    offline_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ChannelSubscription(Base):
+    __tablename__ = "channel_subscriptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("channel_tasks.id"))
+    channel_id: Mapped[int] = mapped_column(BigInteger)
+    channel_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    channel_title: Mapped[str] = mapped_column(String(255))
+    last_post_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    subscribed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class ChannelLog(Base):
+    __tablename__ = "channel_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("channel_tasks.id"))
+    channel_title: Mapped[str] = mapped_column(String(255))
+    action: Mapped[str] = mapped_column(String(50))   # subscribed/commented/reacted/error
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

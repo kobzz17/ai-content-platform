@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Account, BotTask, BotLog, Dialog, CreateTaskPayload } from "../api/client";
+import { api, Account, BotTask, BotLog, Dialog, CreateTaskPayload, ChannelTask, ChannelLog, CreateChannelTaskPayload, SessionMode } from "../api/client";
+
+const SESSION_MODE_LABELS: Record<SessionMode, string> = {
+  always: "Всегда активен",
+  random: "Хаотичный режим",
+  work_hours: "Рабочие часы (9-20 UTC)",
+  evening: "Вечерний (18-23 UTC)",
+};
 
 interface Props {
   accounts: Account[];
@@ -17,18 +24,35 @@ const STATUS_BADGE: Record<string, { label: string; color: string }> = {
   stopped: { label: "Остановлен", color: "#6b7280" },
 };
 
+type MainTab = "chats" | "channels";
+
+const CH_ACTION_LABELS: Record<string, string> = {
+  subscribed: "Подписался",
+  commented: "Прокомментировал",
+  reacted: "Реакция",
+  error: "Ошибка",
+};
+
 export function AutomationView({ accounts }: Props) {
+  const [mainTab, setMainTab] = useState<MainTab>("chats");
   const [tasks, setTasks] = useState<BotTask[]>([]);
   const [logs, setLogs] = useState<BotLog[]>([]);
+  const [channelTasks, setChannelTasks] = useState<ChannelTask[]>([]);
+  const [channelLogs, setChannelLogs] = useState<ChannelLog[]>([]);
   const [showModal, setShowModal] = useState(false);
+  const [showChannelModal, setShowChannelModal] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     loadTasks();
     loadLogs();
+    loadChannelTasks();
+    loadChannelLogs();
     const interval = setInterval(() => {
       loadTasks();
       loadLogs();
+      loadChannelTasks();
+      loadChannelLogs();
     }, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -44,9 +68,15 @@ export function AutomationView({ accounts }: Props) {
   }
 
   async function loadLogs() {
-    try {
-      setLogs(await api.getAllLogs());
-    } catch {}
+    try { setLogs(await api.getAllLogs()); } catch {}
+  }
+
+  async function loadChannelTasks() {
+    try { setChannelTasks(await api.listChannelTasks()); } catch {}
+  }
+
+  async function loadChannelLogs() {
+    try { setChannelLogs(await api.getChannelLogs()); } catch {}
   }
 
   async function handleStatus(task: BotTask, status: "running" | "paused" | "stopped") {
@@ -64,14 +94,108 @@ export function AutomationView({ accounts }: Props) {
     setShowModal(false);
   }
 
+  async function handleChannelStatus(task: ChannelTask, status: "running" | "paused" | "stopped") {
+    try {
+      const updated = await api.updateChannelTaskStatus(task.id, status);
+      if (status === "stopped") setChannelTasks(prev => prev.filter(t => t.id !== updated.id));
+      else setChannelTasks(prev => prev.map(t => t.id === updated.id ? updated : t));
+    } catch {}
+  }
+
+  async function handleTriggerNow(taskId: number) {
+    try {
+      await api.triggerChannelTask(taskId);
+    } catch (e: any) {
+      alert(e.message);
+    }
+  }
+
   return (
     <div style={s.root}>
       <div style={s.header}>
-        <span style={s.title}>Автоматизация</span>
-        <button style={s.addBtn} onClick={() => setShowModal(true)}>+ Добавить задачу</button>
+        <div style={s.headerLeft}>
+          <span style={s.title}>Автоматизация</span>
+          <div style={s.mainTabs}>
+            <button style={{...s.mainTab, ...(mainTab === "chats" ? s.mainTabActive : {})}} onClick={() => setMainTab("chats")}>💬 Чаты</button>
+            <button style={{...s.mainTab, ...(mainTab === "channels" ? s.mainTabActive : {})}} onClick={() => setMainTab("channels")}>📡 Каналы</button>
+          </div>
+        </div>
+        {mainTab === "chats"
+          ? <button style={s.addBtn} onClick={() => setShowModal(true)}>+ Добавить задачу</button>
+          : <button style={s.addBtn} onClick={() => setShowChannelModal(true)}>+ Мониторинг канала</button>
+        }
       </div>
 
       <div style={s.body}>
+        {mainTab === "channels" && (
+          <>
+            <div style={s.taskPanel}>
+              <div style={s.panelTitle}>Мониторинг каналов</div>
+              {channelTasks.length === 0 && <div style={s.empty}>Нет активных задач</div>}
+              {channelTasks.map(ct => {
+                const badge = STATUS_BADGE[ct.status] || STATUS_BADGE.stopped;
+                return (
+                  <div key={ct.id} style={s.taskCard}>
+                    <div style={s.taskRow}>
+                      <span style={s.taskAccount}>{ct.account_label || `#${ct.account_id}`}</span>
+                      <span style={{...s.taskBadge, color: badge.color, borderColor: badge.color}}>{badge.label}</span>
+                    </div>
+                    <div style={s.taskChat}>🔍 {ct.keywords}</div>
+                    <div style={s.taskMeta}>
+                      Подписок: {ct.subscriptions_count}/{ct.max_channels} · Комментарии: {ct.comment_probability}% · Реакции: {ct.reaction_probability}%
+                    </div>
+                    <div style={s.taskMeta}>
+                      Проверка каждые {ct.check_interval} мин · Макс {ct.max_daily_actions} действий/день
+                    </div>
+                    {ct.last_run_at && <div style={s.taskMeta}>Последняя проверка: {new Date(ct.last_run_at).toLocaleTimeString("ru-RU", {hour:"2-digit",minute:"2-digit"})}</div>}
+                    <div style={s.taskMeta}>
+                      Режим: <span style={{color: ct.session_mode === "always" ? "#22c55e" : ct.session_mode === "random" ? "#a78bfa" : "#f59e0b"}}>
+                        {SESSION_MODE_LABELS[ct.session_mode] || ct.session_mode}
+                      </span>
+                    </div>
+                    {ct.offline_until && new Date(ct.offline_until) > new Date() && (
+                      <div style={{...s.taskMeta, color: "#f59e0b"}}>
+                        😴 Оффлайн до {new Date(ct.offline_until).toLocaleTimeString("ru-RU", {hour:"2-digit",minute:"2-digit"})}
+                      </div>
+                    )}
+                    <div style={s.taskActions}>
+                      {ct.status === "running" && (
+                        <>
+                          <button style={s.btnTrigger} onClick={() => handleTriggerNow(ct.id)}>⚡ Проверить сейчас</button>
+                          <button style={s.btnPause} onClick={() => handleChannelStatus(ct, "paused")}>⏸ Пауза</button>
+                        </>
+                      )}
+                      {ct.status === "paused" && <button style={s.btnPlay} onClick={() => handleChannelStatus(ct, "running")}>▶ Запустить</button>}
+                      <button style={s.btnStop} onClick={() => handleChannelStatus(ct, "stopped")}>⛔ Стоп</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={s.logPanel}>
+              <div style={s.panelTitle}>Лог активности в каналах</div>
+              <div style={s.logList}>
+                {channelLogs.length === 0 && <div style={s.empty}>Действий пока нет</div>}
+                {[...channelLogs].reverse().map(log => {
+                  const label = CH_ACTION_LABELS[log.action] || log.action;
+                  const time = new Date(log.created_at).toLocaleTimeString("ru-RU",{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+                  const isError = log.action === "error";
+                  const actionColor = log.action === "subscribed" ? "#22c55e" : log.action === "commented" ? "#60a5fa" : log.action === "reacted" ? "#f59e0b" : "#ef4444";
+                  return (
+                    <div key={log.id} style={{...s.logItem, ...(isError ? s.logError : {})}}>
+                      <span style={s.logTime}>{time}</span>
+                      <span style={s.logAccount}>[{log.channel_title}]</span>
+                      <span style={{...s.logAction, color: actionColor}}>{label}</span>
+                      {log.text && <span style={s.logText}>"{log.text}"</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </>
+        )}
+
+        {mainTab === "chats" && <>
         {/* Task list */}
         <div style={s.taskPanel}>
           <div style={s.panelTitle}>Активные задачи</div>
@@ -139,6 +263,7 @@ export function AutomationView({ accounts }: Props) {
             <div ref={logsEndRef} />
           </div>
         </div>
+        </>}
       </div>
 
       {showModal && (
@@ -146,6 +271,14 @@ export function AutomationView({ accounts }: Props) {
           accounts={accounts}
           onCreated={handleTaskCreated}
           onClose={() => setShowModal(false)}
+        />
+      )}
+
+      {showChannelModal && (
+        <AddChannelTaskModal
+          accounts={accounts}
+          onCreated={(ct) => { setChannelTasks(prev => [ct, ...prev]); setShowChannelModal(false); }}
+          onClose={() => setShowChannelModal(false)}
         />
       )}
     </div>
@@ -346,11 +479,91 @@ function StepDot({ n, label, active, done }: { n: number; label: string; active:
   );
 }
 
+// ── Add Channel Task Modal ────────────────────────────────────────────────────
+
+function AddChannelTaskModal({ accounts, onCreated, onClose }: { accounts: Account[]; onCreated: (t: ChannelTask) => void; onClose: () => void }) {
+  const [accountId, setAccountId] = useState<number | null>(null);
+  const [keywords, setKeywords] = useState("IT новости, технологии, искусственный интеллект");
+  const [persona, setPersona] = useState("Любознательный IT-специалист, интересуется технологиями и следит за новинками");
+  const [maxChannels, setMaxChannels] = useState(5);
+  const [commentProb, setCommentProb] = useState(40);
+  const [reactionProb, setReactionProb] = useState(60);
+  const [checkInterval, setCheckInterval] = useState(60);
+  const [maxDaily, setMaxDaily] = useState(15);
+  const [sessionMode, setSessionMode] = useState<SessionMode>("always");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit() {
+    if (!accountId) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const payload: CreateChannelTaskPayload = {
+        account_id: accountId, keywords, persona,
+        max_channels: maxChannels, comment_probability: commentProb,
+        reaction_probability: reactionProb, check_interval: checkInterval,
+        max_daily_actions: maxDaily, session_mode: sessionMode,
+      };
+      const task = await api.createChannelTask(payload);
+      onCreated(task);
+    } catch (e: any) { setError(e.message); }
+    finally { setSubmitting(false); }
+  }
+
+  return (
+    <div style={s.overlay}>
+      <div style={s.modal}>
+        <span style={s.modalTitle}>Мониторинг каналов</span>
+        <div style={s.hint}>Выберите аккаунт:</div>
+        {accounts.map(acc => (
+          <button key={acc.id} style={{...s.accountBtn, ...(accountId === acc.id ? {borderColor: "#2b6be6", background: "#1e3a5f"} : {})}} onClick={() => setAccountId(acc.id)}>
+            <span style={{...s.avatar, background: acc.avatar_color}}>{(acc.first_name || acc.label)[0].toUpperCase()}</span>
+            <div><div style={s.accName}>{acc.label}</div><div style={s.accPhone}>{acc.phone}</div></div>
+          </button>
+        ))}
+        <label style={s.label}>Ключевые слова (через запятую)</label>
+        <input style={s.input} value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="IT новости, технологии" />
+        <label style={s.label}>Персона</label>
+        <textarea style={s.textarea} value={persona} onChange={e => setPersona(e.target.value)} rows={2} />
+        <div style={s.row}>
+          <div style={{flex:1}}><label style={s.label}>Макс. каналов</label><input type="number" style={s.input} value={maxChannels} min={1} max={20} onChange={e => setMaxChannels(+e.target.value)} /></div>
+          <div style={{flex:1}}><label style={s.label}>Макс. действий/день</label><input type="number" style={s.input} value={maxDaily} min={1} onChange={e => setMaxDaily(+e.target.value)} /></div>
+        </div>
+        <label style={s.label}>Вероятность реакции: <b style={{color:"#f59e0b"}}>{reactionProb}%</b></label>
+        <input type="range" min={0} max={100} value={reactionProb} onChange={e => setReactionProb(+e.target.value)} style={s.range} />
+        <label style={s.label}>Вероятность комментария: <b style={{color:"#60a5fa"}}>{commentProb}%</b></label>
+        <input type="range" min={0} max={100} value={commentProb} onChange={e => setCommentProb(+e.target.value)} style={s.range} />
+        <label style={s.label}>Проверять каждые {checkInterval} мин</label>
+        <input type="range" min={15} max={360} step={15} value={checkInterval} onChange={e => setCheckInterval(+e.target.value)} style={s.range} />
+        <label style={s.label}>Режим активности</label>
+        <div style={{display:"flex", flexDirection:"column", gap:4}}>
+          {(["always","random","work_hours","evening"] as SessionMode[]).map(mode => (
+            <button key={mode} onClick={() => setSessionMode(mode)}
+              style={{background: sessionMode===mode ? "#1e3a5f" : "#222", border: `1px solid ${sessionMode===mode ? "#2b6be6" : "#2a2a2a"}`, borderRadius:8, padding:"8px 12px", cursor:"pointer", textAlign:"left", color: sessionMode===mode ? "#fff" : "#888", fontSize:13}}>
+              {sessionMode === mode && "✓ "}{SESSION_MODE_LABELS[mode]}
+            </button>
+          ))}
+        </div>
+        {error && <div style={s.error}>{error}</div>}
+        <button style={{...s.submitBtn, opacity: accountId ? 1 : 0.4}} disabled={!accountId || submitting} onClick={handleSubmit}>
+          {submitting ? "Запускаем..." : "Запустить мониторинг"}
+        </button>
+        <button style={s.cancelBtn} onClick={onClose}>Отмена</button>
+      </div>
+    </div>
+  );
+}
+
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const s: Record<string, React.CSSProperties> = {
   root: { display: "flex", flexDirection: "column", flex: 1, overflow: "hidden", background: "#121212" },
   header: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderBottom: "1px solid #2a2a2a" },
+  headerLeft: { display: "flex", alignItems: "center", gap: 16 },
+  mainTabs: { display: "flex", background: "#1a1a1a", borderRadius: 8, padding: 3, gap: 2 },
+  mainTab: { padding: "5px 14px", background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 12, fontWeight: 600, borderRadius: 6 },
+  mainTabActive: { background: "#2a2a2a", color: "#fff" },
   title: { color: "#fff", fontWeight: 700, fontSize: 18 },
   addBtn: { background: "#2b6be6", color: "#fff", border: "none", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontWeight: 600, fontSize: 13 },
   body: { display: "flex", flex: 1, overflow: "hidden" },
@@ -368,6 +581,7 @@ const s: Record<string, React.CSSProperties> = {
   btnPause: { background: "#1e3a5f", color: "#60a5fa", border: "1px solid #2b6be6", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 },
   btnPlay: { background: "#14532d", color: "#22c55e", border: "1px solid #16a34a", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 },
   btnStop: { background: "#2a1a1a", color: "#ef4444", border: "1px solid #7f1d1d", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 },
+  btnTrigger: { background: "#1a2a1a", color: "#4ade80", border: "1px solid #16a34a", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12, fontWeight: 600 },
   logList: { flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 6 },
   logItem: { display: "flex", alignItems: "baseline", gap: 6, fontSize: 12, flexWrap: "wrap" },
   logError: { opacity: 0.7 },
@@ -377,7 +591,7 @@ const s: Record<string, React.CSSProperties> = {
   logText: { color: "#ccc", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 500 },
   // Modal
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 },
-  modal: { background: "#1a1a1a", borderRadius: 14, padding: 24, width: 480, maxHeight: "85vh", display: "flex", flexDirection: "column", gap: 16, border: "1px solid #2a2a2a" },
+  modal: { background: "#1a1a1a", borderRadius: 14, padding: 24, width: 480, maxHeight: "85vh", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16, border: "1px solid #2a2a2a" },
   modalHeader: { display: "flex", flexDirection: "column", gap: 16 },
   modalTitle: { color: "#fff", fontWeight: 700, fontSize: 18 },
   steps: { display: "flex", alignItems: "center", gap: 0 },

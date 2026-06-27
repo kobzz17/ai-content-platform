@@ -16,5 +16,15 @@ async def get_session() -> AsyncSession:
 
 
 async def init_db():
+    from sqlalchemy import text
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Lightweight migrations: add columns that may not exist yet
+        for stmt in [
+            "ALTER TABLE channel_tasks ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'always'",
+            "ALTER TABLE channel_tasks ADD COLUMN offline_until DATETIME",
+        ]:
+            try:
+                await conn.execute(text(stmt))
+            except Exception:
+                pass  # Column already exists

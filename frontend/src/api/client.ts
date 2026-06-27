@@ -26,6 +26,32 @@ export const api = {
   }) => req<Account>("/accounts/auth/confirm", { method: "POST", body: JSON.stringify(data) }),
   removeAccount: (id: number) =>
     req(`/accounts/${id}`, { method: "DELETE" }),
+  importBatch: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return fetch(`${BASE}/accounts/import-batch`, { method: "POST", body: form })
+      .then(async (res) => {
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(err.detail || "Import failed");
+        }
+        return res.json() as Promise<{ ok: Account[]; failed: { label: string; error: string }[] }>;
+      });
+  },
+
+  importTdata: (file: File, passcode?: string) => {
+    const form = new FormData();
+    form.append("file", file);
+    if (passcode) form.append("passcode", passcode);
+    return fetch(`${BASE}/accounts/import-tdata`, { method: "POST", body: form })
+      .then(async (res) => {
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(err.detail || "Import failed");
+        }
+        return res.json() as Promise<{ ok: Account[]; failed: { label: string; error: string }[] }>;
+      });
+  },
 
   // Dialogs & Messages
   getDialogs: (accountId: number) =>
@@ -37,6 +63,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ chat_id: chatId, text }),
     }),
+
+  // Channel tasks
+  listChannelTasks: () => req<ChannelTask[]>("/channels/tasks"),
+  createChannelTask: (data: CreateChannelTaskPayload) =>
+    req<ChannelTask>("/channels/tasks", { method: "POST", body: JSON.stringify(data) }),
+  updateChannelTaskStatus: (taskId: number, status: TaskStatus) =>
+    req<ChannelTask>(`/channels/tasks/${taskId}`, { method: "PATCH", body: JSON.stringify({ status }) }),
+  triggerChannelTask: (taskId: number) =>
+    req(`/channels/tasks/${taskId}/trigger`, { method: "POST" }),
+  getChannelLogs: () => req<ChannelLog[]>("/channels/logs"),
 
   // Automation
   listTasks: () => req<BotTask[]>("/automation/tasks"),
@@ -123,6 +159,48 @@ export interface BotLog {
   action: string;
   text: string | null;
   created_at: string;
+}
+
+export type SessionMode = "always" | "random" | "work_hours" | "evening";
+
+export interface ChannelTask {
+  id: number;
+  account_id: number;
+  account_label: string | null;
+  keywords: string;
+  status: TaskStatus;
+  persona: string;
+  max_channels: number;
+  comment_probability: number;
+  reaction_probability: number;
+  check_interval: number;
+  max_daily_actions: number;
+  session_mode: SessionMode;
+  offline_until: string | null;
+  subscriptions_count: number;
+  last_run_at: string | null;
+  created_at: string;
+}
+
+export interface ChannelLog {
+  id: number;
+  task_id: number;
+  channel_title: string;
+  action: string;
+  text: string | null;
+  created_at: string;
+}
+
+export interface CreateChannelTaskPayload {
+  account_id: number;
+  keywords: string;
+  persona: string;
+  max_channels: number;
+  comment_probability: number;
+  reaction_probability: number;
+  check_interval: number;
+  max_daily_actions: number;
+  session_mode: string;
 }
 
 export interface CreateTaskPayload {

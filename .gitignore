@@ -1,13 +1,19 @@
 # Python
 backend/.venv/
-backend/__pycache__/
-backend/src/__pycache__/
-backend/**/__pycache__/
+**/__pycache__/
+*.pyc
 backend/*.db
 backend/tg_manager.db
 
 # Node
 frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
 
 # Env (contains secrets)
 .env
+*.env
+
+# OS / temp
+.DS_Store
+tdata_import_*

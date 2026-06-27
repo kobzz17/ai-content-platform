@@ -19,6 +19,11 @@ export default function App() {
   const [code, setCode] = useState("");
   const [codeSent, setCodeSent] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [showImport, setShowImport] = useState(false);
+  const [importResult, setImportResult] = useState<{ ok: Account[]; failed: { label: string; error: string }[] } | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importMode, setImportMode] = useState<"session" | "tdata">("session");
+  const [tdataPasscode, setTdataPasscode] = useState("");
 
   useEffect(() => {
     api.listAccounts().then(setAccounts);
@@ -70,6 +75,7 @@ export default function App() {
           selectedId={selectedAccountId}
           onSelect={setSelectedAccountId}
           onAddAccount={() => setShowAddForm(true)}
+          onImport={() => { setShowImport(true); setImportResult(null); }}
         />
       </div>
 
@@ -88,6 +94,100 @@ export default function App() {
         )
       ) : (
         <AutomationView accounts={accounts} />
+      )}
+
+      {/* Batch import modal */}
+      {showImport && (
+        <div style={styles.overlay}>
+          <div style={{...styles.modal, width: 480, maxHeight: "80vh", overflowY: "auto"}}>
+            <h3 style={styles.modalTitle}>Импорт пакета аккаунтов</h3>
+            {!importResult ? (
+              <>
+                {/* Mode selector */}
+                <div style={{display:"flex", gap:6, marginBottom:4}}>
+                  {(["session","tdata"] as const).map(m => (
+                    <button key={m} onClick={() => setImportMode(m)} style={{
+                      flex:1, padding:"7px 0", borderRadius:6, border:"1px solid",
+                      cursor:"pointer", fontSize:12, fontWeight:600,
+                      background: importMode===m ? "#2b6be6" : "none",
+                      borderColor: importMode===m ? "#2b6be6" : "#444",
+                      color: importMode===m ? "#fff" : "#888",
+                    }}>
+                      {m === "session" ? "Session strings" : "tdata (zip)"}
+                    </button>
+                  ))}
+                </div>
+
+                {importMode === "session" ? (
+                  <>
+                    <p style={styles.modalHint}>Загрузите JSON или текстовый файл со session strings:</p>
+                    <p style={{...styles.modalHint, fontSize: 11, fontFamily: "monospace", background:"#1a1a1a", padding:"8px 10px", borderRadius:6, lineHeight:1.6}}>
+                      JSON: {`[{"session":"1BQ...","label":"Акк 1"}]`}<br/>
+                      TXT: 1BQ...{"\t"}Акк 1
+                    </p>
+                    <input type="file" accept=".json,.txt" style={{color:"#fff", fontSize:13}}
+                      onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        setImporting(true);
+                        try {
+                          const res = await api.importBatch(f);
+                          setImportResult(res);
+                          if (res.ok.length > 0) setAccounts(prev => [...prev, ...res.ok]);
+                        } catch (err: any) { alert(err.message); }
+                        finally { setImporting(false); }
+                      }}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <p style={styles.modalHint}>ZIP-архив с папками tdata от Telegram Desktop.</p>
+                    <p style={{...styles.modalHint, fontSize:11, lineHeight:1.6}}>
+                      Структура: в архиве одна или несколько папок с файлами key_data*.
+                      Можно упаковать несколько tdata-папок (по одной на аккаунт).
+                    </p>
+                    <input
+                      style={styles.modalInput}
+                      placeholder="Пароль tdata (если есть — оставь пустым если нет)"
+                      value={tdataPasscode}
+                      onChange={e => setTdataPasscode(e.target.value)}
+                    />
+                    <input type="file" accept=".zip" style={{color:"#fff", fontSize:13}}
+                      onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        setImporting(true);
+                        try {
+                          const res = await api.importTdata(f, tdataPasscode || undefined);
+                          setImportResult(res);
+                          if (res.ok.length > 0) setAccounts(prev => [...prev, ...res.ok]);
+                        } catch (err: any) { alert(err.message); }
+                        finally { setImporting(false); }
+                      }}
+                    />
+                  </>
+                )}
+                {importing && <p style={{color:"#60a5fa", fontSize:13}}>Проверяем сессии...</p>}
+              </>
+            ) : (
+              <>
+                <div style={{color:"#22c55e", fontSize:14, fontWeight:600}}>✓ Успешно импортировано: {importResult.ok.length}</div>
+                {importResult.ok.map((a, i) => (
+                  <div key={i} style={{color:"#aaa", fontSize:13}}>• {a.label} ({a.phone})</div>
+                ))}
+                {importResult.failed.length > 0 && (
+                  <>
+                    <div style={{color:"#ef4444", fontSize:14, fontWeight:600, marginTop:8}}>✗ Ошибки: {importResult.failed.length}</div>
+                    {importResult.failed.map((f, i) => (
+                      <div key={i} style={{color:"#888", fontSize:12}}>• {f.label}: {f.error}</div>
+                    ))}
+                  </>
+                )}
+              </>
+            )}
+            <button style={styles.cancelBtn} onClick={() => { setShowImport(false); setImportResult(null); setTdataPasscode(""); }}>Закрыть</button>
+          </div>
+        </div>
       )}
 
       {/* Add account modal */}

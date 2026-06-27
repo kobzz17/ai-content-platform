@@ -80,6 +80,22 @@ async def generate_new_topic(persona: str) -> str:
     return message.content[0].text.strip()
 
 
+async def generate_channel_comment(post_text: str, persona: str) -> str:
+    """Generate a natural comment for a Telegram channel post."""
+    message = await _get_client().messages.create(
+        model=settings.anthropic_model,
+        max_tokens=150,
+        system=(
+            f"Ты — {persona}. Оставляешь комментарий под постом в Telegram-канале. "
+            "Напиши ОДИН короткий, живой комментарий по-русски. "
+            "Можешь согласиться, задать вопрос или добавить своё мнение. "
+            "Без приветствий. Максимум 2 предложения."
+        ),
+        messages=[{"role": "user", "content": f"Пост:\n{post_text[:500]}\n\nТвой комментарий:"}],
+    )
+    return message.content[0].text.strip()
+
+
 async def improve_text(text: str, instruction: str) -> str:
     """Rewrite a draft message according to an instruction (shorter, more formal, etc.)."""
     message = await _get_client().messages.create(
