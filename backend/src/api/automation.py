@@ -20,6 +20,28 @@ class CreateTaskRequest(BaseModel):
     max_delay: int = 30
     proactive_interval: int | None = None
 
+    from pydantic import model_validator, field_validator
+
+    @field_validator("reply_probability")
+    @classmethod
+    def _prob_range(cls, v: int) -> int:
+        if not (0 <= v <= 100):
+            raise ValueError("Должно быть от 0 до 100")
+        return v
+
+    @field_validator("min_delay", "max_delay")
+    @classmethod
+    def _delay_range(cls, v: int) -> int:
+        if not (0 <= v <= 3600):
+            raise ValueError("Задержка должна быть от 0 до 3600 секунд")
+        return v
+
+    @model_validator(mode="after")
+    def _delay_order(self) -> "CreateTaskRequest":
+        if self.min_delay > self.max_delay:
+            raise ValueError("min_delay не может быть больше max_delay")
+        return self
+
 
 class UpdateStatusRequest(BaseModel):
     status: TaskStatus
@@ -151,6 +173,7 @@ async def get_task_logs(task_id: int, limit: int = 50, session: AsyncSession = D
 
 @router.get("/logs", response_model=list[LogOut])
 async def get_all_logs(limit: int = 100, session: AsyncSession = Depends(get_session)):
+    limit = min(max(limit, 1), 500)
     result = await session.execute(
         select(BotLog).order_by(desc(BotLog.created_at)).limit(limit)
     )

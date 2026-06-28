@@ -18,7 +18,37 @@ class CreateChannelTaskRequest(BaseModel):
     reaction_probability: int = 60
     check_interval: int = 60
     max_daily_actions: int = 15
-    session_mode: str = "always"
+    session_mode: SessionMode = SessionMode.always
+
+    from pydantic import field_validator
+
+    @field_validator("comment_probability", "reaction_probability")
+    @classmethod
+    def _prob_range(cls, v: int) -> int:
+        if not (0 <= v <= 100):
+            raise ValueError("Должно быть от 0 до 100")
+        return v
+
+    @field_validator("max_channels")
+    @classmethod
+    def _max_channels_range(cls, v: int) -> int:
+        if not (1 <= v <= 50):
+            raise ValueError("Должно быть от 1 до 50")
+        return v
+
+    @field_validator("check_interval")
+    @classmethod
+    def _interval_range(cls, v: int) -> int:
+        if not (1 <= v <= 1440):
+            raise ValueError("Должно быть от 1 до 1440 минут")
+        return v
+
+    @field_validator("max_daily_actions")
+    @classmethod
+    def _daily_range(cls, v: int) -> int:
+        if not (1 <= v <= 200):
+            raise ValueError("Должно быть от 1 до 200")
+        return v
 
 
 class UpdateStatusRequest(BaseModel):
@@ -179,6 +209,7 @@ async def trigger_task(task_id: int, session: AsyncSession = Depends(get_session
 
 @router.get("/logs", response_model=list[ChannelLogOut])
 async def get_all_logs(limit: int = 100, session: AsyncSession = Depends(get_session)):
+    limit = min(max(limit, 1), 500)
     result = await session.execute(
         select(ChannelLog).order_by(desc(ChannelLog.created_at)).limit(limit)
     )

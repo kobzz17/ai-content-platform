@@ -82,6 +82,9 @@ class BatchImportResult(BaseModel):
     failed: list[dict] = []
 
 
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+
+
 @router.post("/import-batch", response_model=BatchImportResult, status_code=200)
 async def import_batch(
     file: UploadFile = File(...),
@@ -98,7 +101,10 @@ async def import_batch(
       1BQANOTEuMDAAB...   Account 2
     """
     import json
-    content = (await file.read()).decode("utf-8").strip()
+    raw_bytes = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(raw_bytes) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Файл слишком большой (макс. 50 МБ)")
+    content = raw_bytes.decode("utf-8").strip()
 
     # Parse input
     entries: list[dict] = []
@@ -208,7 +214,9 @@ async def import_tdata(
     from telethon import TelegramClient
     from telethon.sessions import StringSession
 
-    raw = await file.read()
+    raw = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(raw) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Файл слишком большой (макс. 50 МБ)")
 
     ok: list[Account] = []
     failed: list[dict] = []
@@ -220,6 +228,15 @@ async def import_tdata(
 
         try:
             with zipfile.ZipFile(zip_path) as zf:
+                # Guard against ZIP Slip: reject entries that escape the target dir
+                real_tmp = os.path.realpath(tmp)
+                for entry in zf.infolist():
+                    target = os.path.realpath(os.path.join(real_tmp, entry.filename))
+                    if not target.startswith(real_tmp + os.sep) and target != real_tmp:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Небезопасный ZIP: подозрительный путь {entry.filename!r}",
+                        )
                 zf.extractall(tmp)
         except zipfile.BadZipFile:
             raise HTTPException(status_code=400, detail="Не ZIP-архив")

@@ -4,6 +4,7 @@ One TelegramClient per account, kept alive in memory.
 """
 import asyncio
 import logging
+import time
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.types import User
@@ -17,6 +18,10 @@ _clients: dict[int, TelegramClient] = {}
 _auth_clients: dict[str, TelegramClient] = {}
 # phone → phone_code_hash during auth
 _auth_hashes: dict[str, str] = {}
+# phone → timestamp when auth was started (for cleanup)
+_auth_started: dict[str, float] = {}
+
+_AUTH_TIMEOUT_SEC = 600  # auth sessions expire after 10 minutes
 
 
 def _make_client(session_string: str = "", proxy: str | None = None) -> TelegramClient:
@@ -65,13 +70,38 @@ async def disconnect_all():
 
 # ── Auth flow ──────────────────────────────────────────────────────────────
 
+async def _cleanup_expired_auth() -> None:
+    """Disconnect and remove auth sessions older than _AUTH_TIMEOUT_SEC."""
+    now = time.monotonic()
+    expired = [p for p, t in _auth_started.items() if now - t > _AUTH_TIMEOUT_SEC]
+    for phone in expired:
+        client = _auth_clients.pop(phone, None)
+        _auth_hashes.pop(phone, None)
+        _auth_started.pop(phone, None)
+        if client:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        logger.info("Cleaned up expired auth session for %s", phone)
+
+
 async def start_auth(phone: str) -> None:
     """Step 1: send code to phone number."""
+    await _cleanup_expired_auth()
+    # Disconnect previous pending auth for this phone if any
+    old = _auth_clients.pop(phone, None)
+    if old:
+        try:
+            await old.disconnect()
+        except Exception:
+            pass
     client = _make_client()
     await client.connect()
     result = await client.send_code_request(phone)
     _auth_clients[phone] = client
     _auth_hashes[phone] = result.phone_code_hash
+    _auth_started[phone] = time.monotonic()
     logger.info("Auth code sent to %s", phone)
 
 
@@ -98,5 +128,6 @@ async def complete_auth(phone: str, code: str, password: str | None = None) -> t
     # Clean up temp auth state
     _auth_clients.pop(phone, None)
     _auth_hashes.pop(phone, None)
+    _auth_started.pop(phone, None)
 
     return session_string, me

@@ -82,6 +82,7 @@ async def get_dialogs(
     limit: int = 30,
     session: AsyncSession = Depends(get_session),
 ):
+    limit = min(max(limit, 1), 200)
     """List recent dialogs (chats, groups, channels) for an account."""
     client = await _get_account_client(account_id, session)
     if client is None:
@@ -108,10 +109,10 @@ async def get_messages(
     session: AsyncSession = Depends(get_session),
 ):
     """Fetch recent messages from a chat."""
+    limit = min(max(limit, 1), 200)
     client = await _get_account_client(account_id, session)
     if client is None:
         return DEMO_MESSAGES.get(chat_id, [])
-    me = await client.get_me()
     messages = []
     async for msg in client.iter_messages(chat_id, limit=limit):
         if not msg.text:
@@ -140,5 +141,9 @@ async def send_message(
 ):
     """Send a message from this account to a chat."""
     client = await _get_account_client(account_id, session)
+    if client is None:
+        raise HTTPException(status_code=400, detail="Отправка недоступна в демо-режиме")
+    if not data.text or not data.text.strip():
+        raise HTTPException(status_code=400, detail="Текст сообщения не может быть пустым")
     sent = await client.send_message(chat_id, data.text)
     return {"message_id": sent.id, "date": sent.date.isoformat()}

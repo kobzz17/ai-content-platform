@@ -102,6 +102,7 @@ def _check_session_mode(task: ChannelTask) -> str | None:
 async def _channel_loop(task_id: int) -> None:
     from src.services.ai_service import generate_channel_comment
 
+    check_interval = 60  # fallback if task can't be loaded
     while True:
         try:
             async with async_session_maker() as db:
@@ -111,7 +112,12 @@ async def _channel_loop(task_id: int) -> None:
                 if task.status == TaskStatus.paused:
                     await asyncio.sleep(30)
                     continue
+                check_interval = task.check_interval
                 account = await db.get(Account, task.account_id)
+
+            if not account:
+                logger.error("Task %d: account not found, stopping", task_id)
+                break
 
             if account.session_string == "DEMO":
                 await asyncio.sleep(60)
@@ -199,7 +205,7 @@ async def _channel_loop(task_id: int) -> None:
 
         # Random variation ±40% so timing is never predictable
         # But wake up early if manually triggered
-        base = task.check_interval * 60
+        base = check_interval * 60
         sleep_time = random.uniform(base * 0.6, base * 1.4)
         event = _triggers.setdefault(task_id, asyncio.Event())
         event.clear()
