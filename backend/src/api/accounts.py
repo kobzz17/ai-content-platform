@@ -82,7 +82,8 @@ class BatchImportResult(BaseModel):
     failed: list[dict] = []
 
 
-_MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
+_MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+_VERIFY_CONCURRENCY = 10  # сколько сессий проверяем параллельно
 
 
 @router.post("/import-batch", response_model=BatchImportResult, status_code=200)
@@ -91,19 +92,17 @@ async def import_batch(
     session: AsyncSession = Depends(get_session),
 ):
     """
-    Bulk import accounts from a JSON or plain-text file.
+    Массовый импорт аккаунтов из JSON или текстового файла.
 
-    JSON format:
-      [{"session": "...", "label": "Account 1"}, ...]
+    JSON: [{"session": "...", "label": "Имя"}, ...]
+    TXT:  1BQ...TAB Имя   (по одной строке)
 
-    Plain text format (one session string per line, optional label after tab):
-      1BQANOTEuMDAAA...   Account 1
-      1BQANOTEuMDAAB...   Account 2
+    Поддерживает партии любого размера. Сессии проверяются параллельно.
     """
     import json
     raw_bytes = await file.read(_MAX_UPLOAD_BYTES + 1)
     if len(raw_bytes) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Файл слишком большой (макс. 50 МБ)")
+        raise HTTPException(status_code=413, detail="Файл слишком большой (макс. 500 МБ)")
     content = raw_bytes.decode("utf-8").strip()
 
     # Parse input

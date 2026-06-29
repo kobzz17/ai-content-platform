@@ -4,8 +4,10 @@ import { AccountSidebar } from "./components/AccountSidebar";
 import { ChatView } from "./components/ChatView";
 import { AIPanel } from "./components/AIPanel";
 import { AutomationView } from "./components/AutomationView";
+import WarmupView from "./components/WarmupView";
+import ProxyView from "./components/ProxyView";
 
-type Tab = "chats" | "automation";
+type Tab = "chats" | "automation" | "warmup" | "proxies";
 
 export default function App() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -69,6 +71,18 @@ export default function App() {
           >
             🤖 Авто
           </button>
+          <button
+            style={{ ...styles.tab, ...(tab === "warmup" ? styles.tabActive : {}) }}
+            onClick={() => setTab("warmup")}
+          >
+            🔥 Прогрев
+          </button>
+          <button
+            style={{ ...styles.tab, ...(tab === "proxies" ? styles.tabActive : {}) }}
+            onClick={() => setTab("proxies")}
+          >
+            🔒 Прокси
+          </button>
         </div>
         <AccountSidebar
           accounts={accounts}
@@ -92,8 +106,12 @@ export default function App() {
         ) : (
           <div style={styles.empty}>Выбери аккаунт, чтобы начать</div>
         )
-      ) : (
+      ) : tab === "automation" ? (
         <AutomationView accounts={accounts} />
+      ) : tab === "warmup" ? (
+        <WarmupView accounts={accounts} />
+      ) : (
+        <ProxyView accounts={accounts} />
       )}
 
       {/* Batch import modal */}

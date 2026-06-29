@@ -86,6 +86,46 @@ export const api = {
   getTaskLogs: (taskId: number) => req<BotLog[]>(`/automation/tasks/${taskId}/logs`),
   getAllLogs: () => req<BotLog[]>("/automation/logs"),
 
+  // Warmup
+  listWarmupTasks: () => req<WarmupTask[]>("/warmup/tasks"),
+  startWarmup: (account_id: number, target_days: number) =>
+    req<WarmupTask>("/warmup/start", { method: "POST", body: JSON.stringify({ account_id, target_days }) }),
+  pauseWarmup: (taskId: number) =>
+    req(`/warmup/tasks/${taskId}/pause`, { method: "PATCH" }),
+  resumeWarmup: (taskId: number) =>
+    req(`/warmup/tasks/${taskId}/resume`, { method: "PATCH" }),
+  stopWarmup: (taskId: number) =>
+    req(`/warmup/tasks/${taskId}`, { method: "DELETE" }),
+  getWarmupLogs: (accountId: number) =>
+    req<WarmupLog[]>(`/warmup/logs/${accountId}`),
+  getAccountStats: () => req<AccountStats[]>("/warmup/stats"),
+  getAccountEvents: () => req<AccountEvent[]>("/warmup/events"),
+  setupProfiles: (account_ids: number[], gender: string, set_photo: boolean) =>
+    req<object[]>("/warmup/setup-profiles", {
+      method: "POST",
+      body: JSON.stringify({ account_ids, gender, set_photo }),
+    }),
+
+  // Proxies
+  listProxies: () => req<Proxy[]>("/proxies/"),
+  addProxy: (data: AddProxyPayload) =>
+    req<Proxy>("/proxies/", { method: "POST", body: JSON.stringify(data) }),
+  addProxiesBatch: (proxies: string[]) =>
+    req<{ added: number; failed: object[] }>("/proxies/batch", {
+      method: "POST",
+      body: JSON.stringify({ proxies }),
+    }),
+  assignProxy: (proxyId: number, account_id: number) =>
+    req<Proxy>(`/proxies/${proxyId}/assign`, {
+      method: "POST",
+      body: JSON.stringify({ account_id }),
+    }),
+  autoAssignProxies: () => req("/proxies/auto-assign", { method: "POST" }),
+  checkProxy: (proxyId: number) =>
+    req<{ healthy: boolean; error: string | null }>(`/proxies/${proxyId}/check`, { method: "POST" }),
+  deleteProxy: (proxyId: number) =>
+    req(`/proxies/${proxyId}`, { method: "DELETE" }),
+
   // AI
   suggest: (conversation: ConversationMessage[], hint?: string, tone?: string) =>
     req<{ suggestions: string[] }>("/ai/suggest", {
@@ -212,4 +252,74 @@ export interface CreateTaskPayload {
   min_delay: number;
   max_delay: number;
   proactive_interval: number | null;
+}
+
+export type WarmupStatus = "pending" | "warming" | "completed" | "failed" | "paused";
+
+export interface WarmupTask {
+  id: number;
+  account_id: number;
+  account_label: string | null;
+  account_phone: string | null;
+  status: WarmupStatus;
+  target_days: number;
+  current_day: number;
+  actions_today: number;
+  actions_total: number;
+  started_at: string | null;
+  completed_at: string | null;
+  last_activity_at: string | null;
+  created_at: string;
+}
+
+export interface WarmupLog {
+  id: number;
+  account_id: number;
+  action: string;
+  detail: string | null;
+  created_at: string;
+}
+
+export interface AccountStats {
+  id: number;
+  label: string;
+  phone: string;
+  status: string;
+  warmup_status: string;
+  warmup_started_at: string | null;
+  total_actions: number;
+  restrictions_count: number;
+  bans_count: number;
+  proxy: string | null;
+  created_at: string;
+}
+
+export interface AccountEvent {
+  id: number;
+  account_id: number;
+  event_type: string;
+  detail: string | null;
+  detected_at: string;
+}
+
+export interface Proxy {
+  id: number;
+  protocol: string;
+  host: string;
+  port: number;
+  username: string | null;
+  is_active: boolean;
+  is_healthy: boolean;
+  last_checked_at: string | null;
+  assigned_account_id: number | null;
+  assigned_account_label: string | null;
+  added_at: string;
+}
+
+export interface AddProxyPayload {
+  protocol: string;
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
 }

@@ -4,8 +4,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.database import init_db
 from src.session_manager import disconnect_all
-from src.api import accounts, messages, ai, automation, channels
-from src.services import bot_service, channel_service
+from src.api import accounts, messages, ai, automation, channels, warmup, proxies
+from src.services import bot_service, channel_service, warmup_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +18,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     await bot_service.start_all_running()
     await channel_service.start_all_running()
+    await warmup_service.start_all_running()
     yield
     await disconnect_all()
 
@@ -36,6 +37,8 @@ app.include_router(messages.router, prefix="/api")
 app.include_router(ai.router, prefix="/api")
 app.include_router(automation.router, prefix="/api")
 app.include_router(channels.router, prefix="/api")
+app.include_router(warmup.router, prefix="/api")
+app.include_router(proxies.router, prefix="/api")
 
 
 @app.get("/health")

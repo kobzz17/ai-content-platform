@@ -5,6 +5,14 @@ from sqlalchemy.orm import Mapped, mapped_column
 from src.database import Base
 
 
+class WarmupStatus(str, enum.Enum):
+    pending = "pending"
+    warming = "warming"
+    completed = "completed"
+    failed = "failed"
+    paused = "paused"
+
+
 class AccountStatus(str, enum.Enum):
     active = "active"
     limited = "limited"       # Telegram put a temporary limit
@@ -22,18 +30,78 @@ class Account(Base):
     __tablename__ = "accounts"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    label: Mapped[str] = mapped_column(String(255))          # friendly name you give it
+    label: Mapped[str] = mapped_column(String(255))
     phone: Mapped[str] = mapped_column(String(32), unique=True)
-    session_string: Mapped[str] = mapped_column(Text)        # encrypted Telethon session
+    session_string: Mapped[str] = mapped_column(Text)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    avatar_color: Mapped[str] = mapped_column(String(7), default="#5b8af7")  # UI color
+    last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    avatar_color: Mapped[str] = mapped_column(String(7), default="#5b8af7")
     status: Mapped[AccountStatus] = mapped_column(SAEnum(AccountStatus), default=AccountStatus.active)
     proxy: Mapped[str | None] = mapped_column(String(255), nullable=True)   # socks5://host:port
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     unread_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Warmup & monitoring
+    warmup_status: Mapped[str] = mapped_column(String(20), default="none")  # none/warming/warmed
+    warmup_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    total_actions: Mapped[int] = mapped_column(Integer, default=0)
+    restrictions_count: Mapped[int] = mapped_column(Integer, default=0)
+    bans_count: Mapped[int] = mapped_column(Integer, default=0)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class Proxy(Base):
+    __tablename__ = "proxies"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    protocol: Mapped[str] = mapped_column(String(10), default="socks5")
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer)
+    username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    password: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_healthy: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    assigned_account_id: Mapped[int | None] = mapped_column(ForeignKey("accounts.id"), nullable=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class WarmupTask(Base):
+    __tablename__ = "warmup_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), unique=True)
+    status: Mapped[WarmupStatus] = mapped_column(SAEnum(WarmupStatus), default=WarmupStatus.pending)
+    target_days: Mapped[int] = mapped_column(Integer, default=7)
+    current_day: Mapped[int] = mapped_column(Integer, default=0)
+    actions_today: Mapped[int] = mapped_column(Integer, default=0)
+    actions_total: Mapped[int] = mapped_column(Integer, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_activity_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class WarmupLog(Base):
+    __tablename__ = "warmup_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    warmup_task_id: Mapped[int | None] = mapped_column(ForeignKey("warmup_tasks.id"), nullable=True)
+    action: Mapped[str] = mapped_column(String(50))
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AccountEvent(Base):
+    __tablename__ = "account_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    event_type: Mapped[str] = mapped_column(String(30))  # ban/restriction/flood_wait/checkpoint/warning
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detected_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
 class BotTask(Base):
