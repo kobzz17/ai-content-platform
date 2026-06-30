@@ -195,6 +195,7 @@ async def import_batch(
 async def import_tdata(
     file: UploadFile = File(...),
     passcode: str = "",
+    proxy: str = "",
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -283,11 +284,7 @@ async def import_tdata(
                     continue
 
                 try:
-                    client = TelegramClient(
-                        StringSession(session_str),
-                        settings.telegram_api_id,
-                        settings.telegram_api_hash,
-                    )
+                    client = sm._make_client(session_str, proxy or None)
                     await client.connect()
                     if not await client.is_user_authorized():
                         await client.disconnect()
@@ -315,6 +312,7 @@ async def import_tdata(
                         session_string=session_str,
                         username=getattr(me, "username", None),
                         first_name=getattr(me, "first_name", None),
+                        proxy=proxy or None,
                     )
                     session.add(account)
                     await session.flush()

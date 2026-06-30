@@ -200,7 +200,7 @@ export default function App() {
                         if (!f) return;
                         setImporting(true);
                         try {
-                          const res = await api.importTdata(f, tdataPasscode || undefined);
+                          const res = await api.importTdata(f, tdataPasscode || undefined, "socks5://8atEWTnm:ChxCfQwS@154.196.87.115:62679");
                           setImportResult(res);
                           if (res.ok.length > 0) setAccounts(prev => [...prev, ...res.ok]);
                         } catch (err: any) { alert(err.message); }

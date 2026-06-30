@@ -39,10 +39,11 @@ export const api = {
       });
   },
 
-  importTdata: (file: File, passcode?: string) => {
+  importTdata: (file: File, passcode?: string, proxy?: string) => {
     const form = new FormData();
     form.append("file", file);
     if (passcode) form.append("passcode", passcode);
+    if (proxy) form.append("proxy", proxy);
     return fetch(`${BASE}/accounts/import-tdata`, { method: "POST", body: form })
       .then(async (res) => {
         if (!res.ok) {
