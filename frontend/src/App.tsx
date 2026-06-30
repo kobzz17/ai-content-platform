@@ -24,7 +24,7 @@ export default function App() {
   const [showImport, setShowImport] = useState(false);
   const [importResult, setImportResult] = useState<{ ok: Account[]; failed: { label: string; error: string }[] } | null>(null);
   const [importing, setImporting] = useState(false);
-  const [importMode, setImportMode] = useState<"session" | "tdata">("session");
+  const [importMode, setImportMode] = useState<"session" | "tdata" | "session_file">("session");
   const [tdataPasscode, setTdataPasscode] = useState("");
 
   useEffect(() => {
@@ -130,15 +130,15 @@ export default function App() {
               <>
                 {/* Mode selector */}
                 <div style={{display:"flex", gap:6, marginBottom:4}}>
-                  {(["session","tdata"] as const).map(m => (
+                  {(["session","session_file","tdata"] as const).map(m => (
                     <button key={m} onClick={() => setImportMode(m)} style={{
                       flex:1, padding:"7px 0", borderRadius:6, border:"1px solid",
-                      cursor:"pointer", fontSize:12, fontWeight:600,
+                      cursor:"pointer", fontSize:11, fontWeight:600,
                       background: importMode===m ? "#2b6be6" : "none",
                       borderColor: importMode===m ? "#2b6be6" : "#444",
                       color: importMode===m ? "#fff" : "#888",
                     }}>
-                      {m === "session" ? "Session strings" : "tdata (zip)"}
+                      {m === "session" ? "Session string" : m === "session_file" ? ".session файл" : "tdata (zip)"}
                     </button>
                   ))}
                 </div>
@@ -157,6 +157,23 @@ export default function App() {
                         setImporting(true);
                         try {
                           const res = await api.importBatch(f);
+                          setImportResult(res);
+                          if (res.ok.length > 0) setAccounts(prev => [...prev, ...res.ok]);
+                        } catch (err: any) { alert(err.message); }
+                        finally { setImporting(false); }
+                      }}
+                    />
+                  </>
+                ) : importMode === "session_file" ? (
+                  <>
+                    <p style={styles.modalHint}>Загрузи один или несколько файлов <b style={{color:"#fff"}}>.session</b> (Telethon).</p>
+                    <input type="file" accept=".session" multiple style={{color:"#fff", fontSize:13}}
+                      onChange={async (e) => {
+                        const files = Array.from(e.target.files || []);
+                        if (!files.length) return;
+                        setImporting(true);
+                        try {
+                          const res = await api.importSessionFiles(files);
                           setImportResult(res);
                           if (res.ok.length > 0) setAccounts(prev => [...prev, ...res.ok]);
                         } catch (err: any) { alert(err.message); }

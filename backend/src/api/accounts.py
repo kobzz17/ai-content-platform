@@ -327,6 +327,96 @@ async def import_tdata(
     return BatchImportResult(ok=[AccountOut.model_validate(a) for a in ok], failed=failed)
 
 
+@router.post("/import-session-files", response_model=BatchImportResult, status_code=200)
+async def import_session_files(
+    files: list[UploadFile] = File(...),
+    proxy: str = "",
+    session: AsyncSession = Depends(get_session),
+):
+    """
+    Import accounts from Telethon .session files.
+    Converts SQLite session to StringSession and creates accounts.
+    """
+    import tempfile, os, sqlite3, struct, base64, ipaddress
+    from src.config import settings
+
+    ok = []
+    failed = []
+
+    def sqlite_to_string(path: str) -> str:
+        conn = sqlite3.connect(path)
+        c = conn.cursor()
+        c.execute("SELECT dc_id, server_address, port, auth_key FROM sessions")
+        row = c.fetchone()
+        conn.close()
+        if not row:
+            raise ValueError("Сессия пустая (нет данных)")
+        dc_id, server_address, port, auth_key = row
+        addr = ipaddress.ip_address(server_address)
+        ip = addr.packed if addr.version == 4 else addr.packed[-4:]
+        data = struct.pack(">B4sH256s", dc_id, ip, port, auth_key)
+        return "1" + base64.urlsafe_b64encode(data).decode("ascii")
+
+    for upload in files:
+        fname = upload.filename or "account"
+        label = fname.replace(".session", "")
+        try:
+            content = await upload.read()
+            with tempfile.NamedTemporaryFile(suffix=".session", delete=False) as f:
+                f.write(content)
+                tmp_path = f.name
+            try:
+                session_string = sqlite_to_string(tmp_path)
+            finally:
+                os.unlink(tmp_path)
+
+            # Verify session by connecting
+            from telethon.sessions import StringSession
+            from telethon import TelegramClient
+            client = TelegramClient(
+                StringSession(session_string),
+                settings.telegram_api_id,
+                settings.telegram_api_hash,
+            )
+            await client.connect()
+            me = await client.get_me()
+            await client.disconnect()
+            if not me:
+                raise ValueError("Не удалось получить данные аккаунта")
+
+            phone = getattr(me, "phone", None) or label
+            username = getattr(me, "username", None)
+            first_name = getattr(me, "first_name", None) or ""
+            last_name = getattr(me, "last_name", None) or ""
+
+            # Check duplicate
+            existing = await session.execute(select(Account).where(Account.phone == phone))
+            if existing.scalar_one_or_none():
+                failed.append({"label": label, "error": "Аккаунт уже существует"})
+                continue
+
+            account = Account(
+                label=label,
+                phone=phone,
+                session_string=session_string,
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                status=AccountStatus.active,
+                is_active=True,
+                proxy=proxy or None,
+            )
+            session.add(account)
+            await session.flush()
+            await session.refresh(account)
+            ok.append(account)
+        except Exception as e:
+            failed.append({"label": label, "error": str(e)[:150]})
+
+    await session.commit()
+    return BatchImportResult(ok=[AccountOut.model_validate(a) for a in ok], failed=failed)
+
+
 @router.delete("/{account_id}", status_code=204)
 async def remove_account(account_id: int, session: AsyncSession = Depends(get_session)):
     account = await session.get(Account, account_id)

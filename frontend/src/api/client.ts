@@ -53,6 +53,20 @@ export const api = {
       });
   },
 
+  importSessionFiles: (files: File[], proxy?: string) => {
+    const form = new FormData();
+    files.forEach((f) => form.append("files", f));
+    if (proxy) form.append("proxy", proxy);
+    return fetch(`${BASE}/accounts/import-session-files`, { method: "POST", body: form })
+      .then(async (res) => {
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ detail: res.statusText }));
+          throw new Error(err.detail || "Import failed");
+        }
+        return res.json() as Promise<{ ok: Account[]; failed: { label: string; error: string }[] }>;
+      });
+  },
+
   // Dialogs & Messages
   getDialogs: (accountId: number) =>
     req<Dialog[]>(`/accounts/${accountId}/dialogs`),
