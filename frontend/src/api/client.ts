@@ -98,6 +98,8 @@ export const api = {
     req(`/warmup/tasks/${taskId}`, { method: "DELETE" }),
   getWarmupLogs: (accountId: number) =>
     req<WarmupLog[]>(`/warmup/logs/${accountId}`),
+  getActivityFeed: (accountId?: number, limit = 100) =>
+    req<ActivityEntry[]>(`/warmup/activity?limit=${limit}${accountId ? `&account_id=${accountId}` : ""}`),
   getAccountStats: () => req<AccountStats[]>("/warmup/stats"),
   getAccountEvents: () => req<AccountEvent[]>("/warmup/events"),
   setupProfiles: (account_ids: number[], gender: string, set_photo: boolean) =>
@@ -300,6 +302,14 @@ export interface AccountEvent {
   event_type: string;
   detail: string | null;
   detected_at: string;
+}
+
+export interface ActivityEntry {
+  source: "warmup" | "channel" | "group";
+  account_id: number;
+  action: string;
+  detail: string | null;
+  created_at: string;
 }
 
 export interface Proxy {

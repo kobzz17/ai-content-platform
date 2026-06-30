@@ -105,7 +105,7 @@ async def start_auth(phone: str) -> None:
     logger.info("Auth code sent to %s", phone)
 
 
-async def complete_auth(phone: str, code: str, password: str | None = None) -> tuple[str, User]:
+async def complete_auth(phone: str, code: str, password: str | None = None, first_name: str | None = None) -> tuple[str, User]:
     """Step 2: confirm code (+ 2FA password if set). Returns (session_string, me)."""
     client = _auth_clients.get(phone)
     if not client:
@@ -115,10 +115,14 @@ async def complete_auth(phone: str, code: str, password: str | None = None) -> t
     try:
         await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
     except Exception as e:
-        if "SessionPasswordNeeded" in type(e).__name__:
+        ename = type(e).__name__
+        if "SessionPasswordNeeded" in ename:
             if not password:
                 raise ValueError("2FA password required") from e
             await client.sign_in(password=password)
+        elif "PhoneNumberUnregistered" in ename:
+            # New number — register it on Telegram
+            await client.sign_up(code, first_name or "User", phone_code_hash=phone_code_hash)
         else:
             raise
 

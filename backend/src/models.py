@@ -170,6 +170,31 @@ class ChannelSubscription(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class GroupChatSession(Base):
+    __tablename__ = "group_chat_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    chat_title: Mapped[str] = mapped_column(String(255))
+    invite_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    account_ids: Mapped[str] = mapped_column(Text)        # JSON list of int
+    status: Mapped[str] = mapped_column(String(20), default="running")  # running/paused/stopped
+    duration_days: Mapped[int] = mapped_column(Integer, default=2)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class GroupChatLog(Base):
+    __tablename__ = "group_chat_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("group_chat_sessions.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    action: Mapped[str] = mapped_column(String(50))   # topic/news/reply/react
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class ChannelLog(Base):
     __tablename__ = "channel_logs"
 

@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
-import { api, WarmupTask, WarmupLog, AccountStats, AccountEvent, Account } from "../api/client";
+import { api, WarmupTask, WarmupLog, AccountStats, AccountEvent, Account, ActivityEntry } from "../api/client";
 
 interface Props {
   accounts: Account[];
 }
 
-type Tab = "tasks" | "monitoring" | "events";
+type Tab = "tasks" | "monitoring" | "events" | "activity";
 
 const STATUS_COLORS: Record<string, string> = {
   warming: "#3b82f6",
@@ -31,6 +31,31 @@ const EVENT_ICONS: Record<string, string> = {
   warning: "⚡",
 };
 
+const ACTIVITY_ICONS: Record<string, string> = {
+  joined_channel: "📢", subscribe: "📢", subscribed: "📢",
+  read_messages: "👁", reacted: "👍", commented: "💬",
+  reply: "💬", topic: "🗣", news: "📰", react: "❤",
+  sent_message: "📨", profile_setup: "🔧", set_username: "🔧",
+  set_name: "🔧", set_photo: "📷",
+};
+
+const ACTIVITY_LABELS: Record<string, string> = {
+  joined_channel: "Подписался на канал", subscribe: "Подписался",
+  subscribed: "Подписался на канал",
+  read_messages: "Прочитал сообщения", reacted: "Поставил реакцию",
+  commented: "Написал комментарий",
+  reply: "Ответил в группе", topic: "Начал тему", news: "Поделился новостью",
+  react: "Реакция в группе", sent_message: "Отправил сообщение",
+  profile_setup: "Настройка профиля", set_username: "Установил юзернейм",
+  set_name: "Установил имя", set_photo: "Загрузил фото",
+};
+
+const SOURCE_COLORS: Record<string, string> = {
+  warmup: "#3b82f6",
+  channel: "#10b981",
+  group: "#a78bfa",
+};
+
 export default function WarmupView({ accounts }: Props) {
   const [tab, setTab] = useState<Tab>("tasks");
   const [tasks, setTasks] = useState<WarmupTask[]>([]);
@@ -39,6 +64,8 @@ export default function WarmupView({ accounts }: Props) {
   const [logs, setLogs] = useState<WarmupLog[]>([]);
   const [logsAccountId, setLogsAccountId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [activityAccountId, setActivityAccountId] = useState<number | undefined>(undefined);
 
   // Start warmup form
   const [showStart, setShowStart] = useState(false);
@@ -60,6 +87,8 @@ export default function WarmupView({ accounts }: Props) {
         setStats(await api.getAccountStats());
       } else if (tab === "events") {
         setEvents(await api.getAccountEvents());
+      } else if (tab === "activity") {
+        setActivity(await api.getActivityFeed(activityAccountId, 150));
       }
     } catch {
       /* ignore */
@@ -68,7 +97,7 @@ export default function WarmupView({ accounts }: Props) {
     }
   };
 
-  useEffect(() => { load(); }, [tab]);
+  useEffect(() => { load(); }, [tab, activityAccountId]);
 
   const startWarmup = async () => {
     if (!startAccountId) return;
@@ -114,7 +143,7 @@ export default function WarmupView({ accounts }: Props) {
 
       {/* Tabs */}
       <div style={{ display: "flex", gap: 4, marginBottom: 16 }}>
-        {(["tasks", "monitoring", "events"] as Tab[]).map((t) => (
+        {(["tasks", "monitoring", "activity", "events"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -125,7 +154,7 @@ export default function WarmupView({ accounts }: Props) {
               fontWeight: tab === t ? 600 : 400,
             }}
           >
-            {t === "tasks" ? "Задачи" : t === "monitoring" ? "Мониторинг" : "События"}
+            {t === "tasks" ? "Задачи" : t === "monitoring" ? "Статистика" : t === "activity" ? "Активность" : "События"}
           </button>
         ))}
         <button onClick={load} style={{
@@ -299,6 +328,78 @@ export default function WarmupView({ accounts }: Props) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* ACTIVITY TAB */}
+      {tab === "activity" && !loading && (
+        <div>
+          {/* Account filter */}
+          <div style={{ marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: "#94a3b8", fontSize: 13 }}>Фильтр по аккаунту:</span>
+            <select
+              value={activityAccountId ?? ""}
+              onChange={(e) => setActivityAccountId(e.target.value ? Number(e.target.value) : undefined)}
+              style={{
+                background: "#0f172a", color: "#e2e8f0", border: "1px solid #334155",
+                borderRadius: 6, padding: "4px 10px", fontSize: 13,
+              }}
+            >
+              <option value="">Все аккаунты</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>{a.label} ({a.phone})</option>
+              ))}
+            </select>
+          </div>
+
+          {activity.length === 0 && (
+            <div style={{ color: "#64748b", textAlign: "center", marginTop: 40 }}>
+              Активности пока нет — аккаунты только начали работу
+            </div>
+          )}
+
+          {activity.map((entry, i) => {
+            const account = accounts.find((a) => a.id === entry.account_id);
+            const icon = ACTIVITY_ICONS[entry.action] || "•";
+            const label = ACTIVITY_LABELS[entry.action] || entry.action;
+            const color = SOURCE_COLORS[entry.source] || "#64748b";
+            return (
+              <div key={i} style={{
+                background: "#1e293b", borderRadius: 6, padding: "10px 14px",
+                marginBottom: 6, border: "1px solid #334155",
+                display: "flex", gap: 12, alignItems: "flex-start",
+              }}>
+                <span style={{ fontSize: 16, minWidth: 20 }}>{icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600, padding: "1px 7px",
+                      borderRadius: 4, background: color + "22", color,
+                    }}>
+                      {entry.source === "warmup" ? "Прогрев" : entry.source === "channel" ? "Канал" : "Группа"}
+                    </span>
+                    <span style={{ fontSize: 12, color: "#cbd5e1", fontWeight: 500 }}>{label}</span>
+                    {account && (
+                      <span style={{ fontSize: 11, color: "#64748b" }}>
+                        — {(account as any).label || (account as any).first_name || `#${entry.account_id}`}
+                      </span>
+                    )}
+                  </div>
+                  {entry.detail && (
+                    <div style={{
+                      fontSize: 12, color: "#94a3b8", marginTop: 3,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>
+                      {entry.detail}
+                    </div>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: "#64748b", whiteSpace: "nowrap", flexShrink: 0 }}>
+                  {new Date(entry.created_at).toLocaleString("ru", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 

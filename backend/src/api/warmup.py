@@ -13,7 +13,8 @@ router = APIRouter(prefix="/warmup", tags=["warmup"])
 
 
 class StartWarmupRequest(BaseModel):
-    account_id: int
+    account_id: int = 0
+    account_ids: list[int] = []
     target_days: int = 7
 
 
@@ -90,8 +91,8 @@ def _task_out(task: WarmupTask, account: Account | None) -> WarmupTaskOut:
 @router.post("/start", response_model=WarmupTaskOut, status_code=201)
 async def start_warmup(data: StartWarmupRequest, session: AsyncSession = Depends(get_session)):
     """Запустить прогрев для аккаунта."""
-    if not (3 <= data.target_days <= 14):
-        raise HTTPException(status_code=400, detail="target_days должно быть от 3 до 14")
+    if not (1 <= data.target_days <= 14):
+        raise HTTPException(status_code=400, detail="target_days должно быть от 1 до 14")
 
     account = await session.get(Account, data.account_id)
     if not account or not account.is_active:
@@ -124,13 +125,12 @@ async def start_warmup(data: StartWarmupRequest, session: AsyncSession = Depends
 @router.post("/start-batch", status_code=200)
 async def start_warmup_batch(
     data: StartWarmupRequest,
-    account_ids: list[int],
     session: AsyncSession = Depends(get_session),
 ):
     """Запустить прогрев для нескольких аккаунтов сразу."""
     results = {"started": [], "skipped": [], "errors": []}
 
-    for account_id in account_ids:
+    for account_id in data.account_ids:
         account = await session.get(Account, account_id)
         if not account or not account.is_active:
             results["errors"].append({"id": account_id, "error": "Аккаунт не найден"})
@@ -254,6 +254,58 @@ async def get_account_stats(session: AsyncSession = Depends(get_session)):
         )
         for a in accounts
     ]
+
+
+@router.get("/activity")
+async def get_activity_feed(
+    account_id: int | None = None,
+    limit: int = 100,
+    session: AsyncSession = Depends(get_session),
+):
+    """Единый лог активности: прогрев + каналы + групповой чат."""
+    from src.models import ChannelTask, ChannelLog, GroupChatLog
+    limit = min(max(limit, 1), 200)
+    entries = []
+
+    # Warmup logs
+    wq = select(WarmupLog).order_by(desc(WarmupLog.created_at)).limit(limit)
+    if account_id:
+        wq = wq.where(WarmupLog.account_id == account_id)
+    for l in (await session.execute(wq)).scalars().all():
+        entries.append({
+            "source": "warmup", "account_id": l.account_id,
+            "action": l.action, "detail": l.detail,
+            "created_at": l.created_at.isoformat(),
+        })
+
+    # Channel logs (через task → account)
+    cq = (
+        select(ChannelLog, ChannelTask.account_id)
+        .join(ChannelTask, ChannelLog.task_id == ChannelTask.id)
+        .order_by(desc(ChannelLog.created_at)).limit(limit)
+    )
+    if account_id:
+        cq = cq.where(ChannelTask.account_id == account_id)
+    for l, acc_id in (await session.execute(cq)).all():
+        entries.append({
+            "source": "channel", "account_id": acc_id,
+            "action": l.action, "detail": f"{l.channel_title}: {l.text or ''}".strip(": "),
+            "created_at": l.created_at.isoformat(),
+        })
+
+    # Group chat logs
+    gq = select(GroupChatLog).order_by(desc(GroupChatLog.created_at)).limit(limit)
+    if account_id:
+        gq = gq.where(GroupChatLog.account_id == account_id)
+    for l in (await session.execute(gq)).scalars().all():
+        entries.append({
+            "source": "group", "account_id": l.account_id,
+            "action": l.action, "detail": l.text,
+            "created_at": l.created_at.isoformat(),
+        })
+
+    entries.sort(key=lambda x: x["created_at"], reverse=True)
+    return entries[:limit]
 
 
 @router.get("/events", response_model=list[AccountEventOut])

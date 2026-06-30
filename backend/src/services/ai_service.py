@@ -96,6 +96,39 @@ async def generate_channel_comment(post_text: str, persona: str) -> str:
     return message.content[0].text.strip()
 
 
+async def generate_group_reply(conversation: list[dict], persona: str, replying_to: str) -> str:
+    """Reply to a specific person in a group chat."""
+    history_text = "\n".join(f"{m['sender']}: {m['text']}" for m in conversation[-10:])
+    message = await _get_client().messages.create(
+        model=settings.anthropic_model,
+        max_tokens=180,
+        system=(
+            f"Ты — {persona}. Ты участник группового чата в Telegram. "
+            f"Ты отвечаешь на сообщение от {replying_to}. "
+            "Напиши ОДНО короткое, живое сообщение по-русски. "
+            "Можно согласиться, поспорить, задать вопрос или добавить что-то своё. "
+            "Без приветствий. 1-2 предложения. Разговорный стиль."
+        ),
+        messages=[{"role": "user", "content": f"Разговор:\n{history_text}\n\nТвой ответ {replying_to}:"}],
+    )
+    return message.content[0].text.strip()
+
+
+async def generate_news_share(news_text: str, channel: str, persona: str) -> str:
+    """Generate a short commentary when sharing news from a channel."""
+    message = await _get_client().messages.create(
+        model=settings.anthropic_model,
+        max_tokens=150,
+        system=(
+            f"Ты — {persona}. Ты делишься новостью из Telegram-канала с друзьями в групповом чате. "
+            "Напиши короткий живой комментарий по-русски — своё мнение или реакцию на новость. "
+            "1-2 предложения. Без заголовков. Разговорный стиль."
+        ),
+        messages=[{"role": "user", "content": f"Новость из {channel}:\n{news_text}\n\nТвой комментарий:"}],
+    )
+    return message.content[0].text.strip()
+
+
 async def improve_text(text: str, instruction: str) -> str:
     """Rewrite a draft message according to an instruction (shorter, more formal, etc.)."""
     message = await _get_client().messages.create(
