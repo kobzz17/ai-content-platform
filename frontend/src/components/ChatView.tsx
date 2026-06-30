@@ -119,7 +119,7 @@ export function ChatView({ accountId }: Props) {
 
 const styles: Record<string, React.CSSProperties> = {
   root: { display: "flex", flex: 1, overflow: "hidden" },
-  dialogList: { width: 260, borderRight: "1px solid #2a2a2a", display: "flex", flexDirection: "column", overflowY: "auto" },
+  dialogList: { width: 260, minWidth: 260, flexShrink: 0, borderRight: "1px solid #2a2a2a", display: "flex", flexDirection: "column", overflowY: "auto" },
   panelHeader: { padding: "14px 12px", color: "#aaa", fontSize: 12, fontWeight: 600, textTransform: "uppercase", borderBottom: "1px solid #2a2a2a" },
   dialogItem: { display: "block", width: "100%", padding: "10px 12px", background: "none", border: "none", cursor: "pointer", textAlign: "left", borderBottom: "1px solid #1e1e1e" },
   dialogActive: { background: "#2a2a2a" },

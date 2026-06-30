@@ -103,7 +103,7 @@ export default function App() {
         {tab === "chats" ? (
           selectedAccountId ? (
             <>
-              <ChatView accountId={selectedAccountId} />
+              <ChatView key={selectedAccountId} accountId={selectedAccountId} />
               <AIPanel
                 messages={[]}
                 onUseSuggestion={(text) => navigator.clipboard.writeText(text)}
