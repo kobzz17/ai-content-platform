@@ -364,14 +364,6 @@ async def import_auth_keys(data: AuthKeyImportRequest, session: AsyncSession = D
             raw = struct.pack(">B4sH256s", item.dc_id, ip_bytes, 443, auth_key)
             session_string = "1" + base64.urlsafe_b64encode(raw).decode("ascii")
 
-            # Verify via connect (try without proxy first — server has direct Telegram access)
-            client = sm._make_client(session_string, None)
-            await client.connect()
-            me = await client.get_me()
-            await client.disconnect()
-            if not me:
-                raise ValueError("Не удалось получить данные аккаунта")
-
             phone = item.phone if item.phone.startswith("+") else f"+{item.phone}"
             existing = await session.execute(select(Account).where(Account.phone == phone))
             if existing.scalar_one_or_none():
@@ -379,15 +371,12 @@ async def import_auth_keys(data: AuthKeyImportRequest, session: AsyncSession = D
                 continue
 
             account = Account(
-                label=item.label or getattr(me, "first_name", None) or phone,
+                label=item.label or phone,
                 phone=phone,
                 session_string=session_string,
-                username=getattr(me, "username", None),
-                first_name=getattr(me, "first_name", None),
-                last_name=getattr(me, "last_name", None),
                 status=AccountStatus.active,
                 is_active=True,
-                proxy=item.proxy or "socks5://8atEWTnm:ChxCfQwS@154.196.87.115:62679",
+                proxy=item.proxy or None,
             )
             session.add(account)
             await session.flush()
