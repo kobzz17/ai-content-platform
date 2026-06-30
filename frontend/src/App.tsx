@@ -99,25 +99,27 @@ export default function App() {
       </div>
 
       {/* Main content area */}
-      {tab === "chats" ? (
-        selectedAccountId ? (
-          <>
-            <ChatView accountId={selectedAccountId} />
-            <AIPanel
-              messages={[]}
-              onUseSuggestion={(text) => navigator.clipboard.writeText(text)}
-            />
-          </>
+      <div style={styles.content}>
+        {tab === "chats" ? (
+          selectedAccountId ? (
+            <>
+              <ChatView accountId={selectedAccountId} />
+              <AIPanel
+                messages={[]}
+                onUseSuggestion={(text) => navigator.clipboard.writeText(text)}
+              />
+            </>
+          ) : (
+            <div style={styles.empty}>Выбери аккаунт, чтобы начать</div>
+          )
+        ) : tab === "automation" ? (
+          <AutomationView accounts={accounts} />
+        ) : tab === "warmup" ? (
+          <WarmupView accounts={accounts} />
         ) : (
-          <div style={styles.empty}>Выбери аккаунт, чтобы начать</div>
-        )
-      ) : tab === "automation" ? (
-        <AutomationView accounts={accounts} />
-      ) : tab === "warmup" ? (
-        <WarmupView accounts={accounts} />
-      ) : (
-        <ProxyView accounts={accounts} />
-      )}
+          <ProxyView accounts={accounts} />
+        )}
+      </div>
 
       {/* Batch import modal */}
       {showImport && (
@@ -250,7 +252,8 @@ export default function App() {
 
 const styles: Record<string, React.CSSProperties> = {
   root: { display: "flex", height: "100vh", background: "#121212", fontFamily: "system-ui, sans-serif", overflow: "hidden" },
-  sidebar: { display: "flex", flexDirection: "column" },
+  sidebar: { display: "flex", flexDirection: "column", flexShrink: 0 },
+  content: { flex: 1, overflowY: "auto", display: "flex", minWidth: 0 },
   tabs: { display: "flex", borderBottom: "1px solid #2a2a2a" },
   tab: { flex: 1, padding: "10px 0", background: "none", border: "none", color: "#666", cursor: "pointer", fontSize: 12, fontWeight: 600 },
   tabActive: { color: "#fff", borderBottom: "2px solid #2b6be6" },
