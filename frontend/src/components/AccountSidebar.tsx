@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Account } from "../api/client";
 
 interface Props {
@@ -6,9 +7,23 @@ interface Props {
   onSelect: (id: number) => void;
   onAddAccount: () => void;
   onImport?: () => void;
+  onDelete?: (id: number) => void;
 }
 
-export function AccountSidebar({ accounts, selectedId, onSelect, onAddAccount, onImport }: Props) {
+export function AccountSidebar({ accounts, selectedId, onSelect, onAddAccount, onImport, onDelete }: Props) {
+  const [hoveredId, setHoveredId] = useState<number | null>(null);
+  const [confirmId, setConfirmId] = useState<number | null>(null);
+
+  const handleDelete = (e: React.MouseEvent, id: number) => {
+    e.stopPropagation();
+    if (confirmId === id) {
+      onDelete?.(id);
+      setConfirmId(null);
+    } else {
+      setConfirmId(id);
+    }
+  };
+
   return (
     <aside style={styles.sidebar}>
       <div style={styles.header}>
@@ -23,33 +38,52 @@ export function AccountSidebar({ accounts, selectedId, onSelect, onAddAccount, o
 
       <div style={styles.list}>
         {accounts.map((acc) => (
-          <button
+          <div
             key={acc.id}
-            style={{
-              ...styles.item,
-              ...(selectedId === acc.id ? styles.itemActive : {}),
-            }}
-            onClick={() => onSelect(acc.id)}
+            style={{ position: "relative" }}
+            onMouseEnter={() => setHoveredId(acc.id)}
+            onMouseLeave={() => { setHoveredId(null); setConfirmId(null); }}
           >
-            <div
+            <button
               style={{
-                ...styles.avatar,
-                background: acc.avatar_color,
+                ...styles.item,
+                ...(selectedId === acc.id ? styles.itemActive : {}),
               }}
+              onClick={() => onSelect(acc.id)}
             >
-              {(acc.first_name || acc.phone)[0].toUpperCase()}
-            </div>
-            <div style={styles.itemInfo}>
-              <div style={styles.itemName}>{acc.label}</div>
-              <div style={styles.itemPhone}>{acc.phone}</div>
-            </div>
-            {acc.unread_count > 0 && (
-              <span style={styles.badge}>{acc.unread_count}</span>
+              <div style={{ ...styles.avatar, background: acc.avatar_color }}>
+                {(acc.first_name || acc.phone)[0].toUpperCase()}
+              </div>
+              <div style={styles.itemInfo}>
+                <div style={styles.itemName}>{acc.label}</div>
+                <div style={styles.itemPhone}>{acc.phone}</div>
+              </div>
+              {acc.unread_count > 0 && (
+                <span style={styles.badge}>{acc.unread_count}</span>
+              )}
+              {acc.status !== "active" && (
+                <span style={styles.statusDot} title={acc.status} />
+              )}
+            </button>
+
+            {onDelete && hoveredId === acc.id && (
+              <button
+                onClick={(e) => handleDelete(e, acc.id)}
+                title={confirmId === acc.id ? "Нажми ещё раз для подтверждения" : "Удалить аккаунт"}
+                style={{
+                  position: "absolute", right: 8, top: "50%",
+                  transform: "translateY(-50%)",
+                  background: confirmId === acc.id ? "#ef4444" : "#374151",
+                  color: "#fff", border: "none", borderRadius: 4,
+                  width: 20, height: 20, fontSize: 12, cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  lineHeight: 1,
+                }}
+              >
+                {confirmId === acc.id ? "!" : "×"}
+              </button>
             )}
-            {acc.status !== "active" && (
-              <span style={styles.statusDot} title={acc.status} />
-            )}
-          </button>
+          </div>
         ))}
 
         {accounts.length === 0 && (

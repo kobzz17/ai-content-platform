@@ -90,6 +90,11 @@ export default function App() {
           onSelect={setSelectedAccountId}
           onAddAccount={() => setShowAddForm(true)}
           onImport={() => { setShowImport(true); setImportResult(null); }}
+          onDelete={async (id) => {
+            await api.removeAccount(id);
+            if (selectedAccountId === id) setSelectedAccountId(null);
+            setAccounts((prev) => prev.filter((a) => a.id !== id));
+          }}
         />
       </div>
 
