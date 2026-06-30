@@ -325,6 +325,81 @@ async def import_tdata(
     return BatchImportResult(ok=[AccountOut.model_validate(a) for a in ok], failed=failed)
 
 
+class AuthKeyImportItem(BaseModel):
+    phone: str
+    auth_key_hex: str   # 512 hex chars = 256 bytes
+    dc_id: int = 2
+    label: str = ""
+    proxy: str = ""
+
+
+class AuthKeyImportRequest(BaseModel):
+    accounts: list[AuthKeyImportItem]
+
+
+_DC_IPS = {1: "149.154.175.53", 2: "149.154.167.51", 3: "149.154.175.100",
+           4: "149.154.167.91", 5: "91.108.56.130"}
+
+
+@router.post("/import-auth-keys", response_model=BatchImportResult, status_code=200)
+async def import_auth_keys(data: AuthKeyImportRequest, session: AsyncSession = Depends(get_session)):
+    """Import accounts from raw Auth Key (HEX) + DC ID — as shown in account marketplaces."""
+    import struct, base64, ipaddress
+
+    ok, failed = [], []
+
+    for item in data.accounts:
+        label = item.label or item.phone
+        try:
+            key_hex = item.auth_key_hex.replace(" ", "").replace("\n", "")
+            if len(key_hex) != 512:
+                raise ValueError(f"Auth Key должен быть 512 hex символов, получено {len(key_hex)}")
+            auth_key = bytes.fromhex(key_hex)
+
+            dc_ip = _DC_IPS.get(item.dc_id)
+            if not dc_ip:
+                raise ValueError(f"Неизвестный DC ID: {item.dc_id}")
+
+            ip_bytes = ipaddress.ip_address(dc_ip).packed
+            raw = struct.pack(">B4sH256s", item.dc_id, ip_bytes, 443, auth_key)
+            session_string = "1" + base64.urlsafe_b64encode(raw).decode("ascii")
+
+            # Verify via connect
+            client = sm._make_client(session_string, item.proxy or "socks5://8atEWTnm:ChxCfQwS@154.196.87.115:62679")
+            await client.connect()
+            me = await client.get_me()
+            await client.disconnect()
+            if not me:
+                raise ValueError("Не удалось получить данные аккаунта")
+
+            phone = item.phone if item.phone.startswith("+") else f"+{item.phone}"
+            existing = await session.execute(select(Account).where(Account.phone == phone))
+            if existing.scalar_one_or_none():
+                failed.append({"label": label, "error": "Аккаунт уже существует"})
+                continue
+
+            account = Account(
+                label=item.label or getattr(me, "first_name", None) or phone,
+                phone=phone,
+                session_string=session_string,
+                username=getattr(me, "username", None),
+                first_name=getattr(me, "first_name", None),
+                last_name=getattr(me, "last_name", None),
+                status=AccountStatus.active,
+                is_active=True,
+                proxy=item.proxy or "socks5://8atEWTnm:ChxCfQwS@154.196.87.115:62679",
+            )
+            session.add(account)
+            await session.flush()
+            await session.refresh(account)
+            ok.append(account)
+        except Exception as e:
+            failed.append({"label": label, "error": str(e)[:150]})
+
+    await session.commit()
+    return BatchImportResult(ok=[AccountOut.model_validate(a) for a in ok], failed=failed)
+
+
 @router.post("/import-session-files", response_model=BatchImportResult, status_code=200)
 async def import_session_files(
     files: list[UploadFile] = File(...),

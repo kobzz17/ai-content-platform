@@ -24,7 +24,10 @@ export default function App() {
   const [showImport, setShowImport] = useState(false);
   const [importResult, setImportResult] = useState<{ ok: Account[]; failed: { label: string; error: string }[] } | null>(null);
   const [importing, setImporting] = useState(false);
-  const [importMode, setImportMode] = useState<"session" | "tdata" | "session_file">("session");
+  const [importMode, setImportMode] = useState<"session" | "tdata" | "session_file" | "auth_key">("auth_key");
+  const [authKeyPhone, setAuthKeyPhone] = useState("");
+  const [authKeyHex, setAuthKeyHex] = useState("");
+  const [authKeyDc, setAuthKeyDc] = useState(1);
   const [tdataPasscode, setTdataPasscode] = useState("");
 
   useEffect(() => {
@@ -130,20 +133,51 @@ export default function App() {
               <>
                 {/* Mode selector */}
                 <div style={{display:"flex", gap:6, marginBottom:4}}>
-                  {(["session","session_file","tdata"] as const).map(m => (
+                  {(["auth_key","session","session_file","tdata"] as const).map(m => (
                     <button key={m} onClick={() => setImportMode(m)} style={{
                       flex:1, padding:"7px 0", borderRadius:6, border:"1px solid",
-                      cursor:"pointer", fontSize:11, fontWeight:600,
+                      cursor:"pointer", fontSize:10, fontWeight:600,
                       background: importMode===m ? "#2b6be6" : "none",
                       borderColor: importMode===m ? "#2b6be6" : "#444",
                       color: importMode===m ? "#fff" : "#888",
                     }}>
-                      {m === "session" ? "Session string" : m === "session_file" ? ".session файл" : "tdata (zip)"}
+                      {m === "auth_key" ? "Auth Key" : m === "session" ? "Session string" : m === "session_file" ? ".session" : "tdata"}
                     </button>
                   ))}
                 </div>
 
-                {importMode === "session" ? (
+                {importMode === "auth_key" ? (
+                  <>
+                    <p style={styles.modalHint}>Вставь данные аккаунта: номер телефона, Auth Key (HEX) и DC ID.</p>
+                    <input style={styles.modalInput} placeholder="Номер телефона (12694979234)"
+                      value={authKeyPhone} onChange={e => setAuthKeyPhone(e.target.value)} />
+                    <textarea style={{...styles.modalInput, height:70, resize:"none", fontSize:11, fontFamily:"monospace"}}
+                      placeholder="Auth Key HEX (512 символов)"
+                      value={authKeyHex} onChange={e => setAuthKeyHex(e.target.value)} />
+                    <div style={{display:"flex", alignItems:"center", gap:8}}>
+                      <span style={{color:"#94a3b8", fontSize:13}}>DC ID:</span>
+                      <select value={authKeyDc} onChange={e => setAuthKeyDc(Number(e.target.value))}
+                        style={{...styles.modalInput, padding:"4px 8px", width:"auto"}}>
+                        {[1,2,3,4,5].map(d => <option key={d} value={d}>{d}</option>)}
+                      </select>
+                    </div>
+                    <button style={styles.modalBtn} disabled={importing || !authKeyPhone || !authKeyHex}
+                      onClick={async () => {
+                        setImporting(true);
+                        try {
+                          const res = await api.importAuthKeys([{
+                            phone: authKeyPhone, auth_key_hex: authKeyHex.trim(),
+                            dc_id: authKeyDc, label: authKeyPhone,
+                          }]);
+                          setImportResult(res);
+                          if (res.ok.length > 0) setAccounts(prev => [...prev, ...res.ok]);
+                        } catch (err: any) { alert(err.message); }
+                        finally { setImporting(false); }
+                      }}>
+                      {importing ? "Проверяем..." : "Добавить аккаунт"}
+                    </button>
+                  </>
+                ) : importMode === "session" ? (
                   <>
                     <p style={styles.modalHint}>Загрузите JSON или текстовый файл со session strings:</p>
                     <p style={{...styles.modalHint, fontSize: 11, fontFamily: "monospace", background:"#1a1a1a", padding:"8px 10px", borderRadius:6, lineHeight:1.6}}>

@@ -54,6 +54,12 @@ export const api = {
       });
   },
 
+  importAuthKeys: (accounts: { phone: string; auth_key_hex: string; dc_id: number; label?: string }[]) =>
+    req<{ ok: Account[]; failed: { label: string; error: string }[] }>("/accounts/import-auth-keys", {
+      method: "POST",
+      body: JSON.stringify({ accounts }),
+    }),
+
   importSessionFiles: (files: File[], proxy?: string) => {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
