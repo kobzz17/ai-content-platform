@@ -364,8 +364,8 @@ async def import_auth_keys(data: AuthKeyImportRequest, session: AsyncSession = D
             raw = struct.pack(">B4sH256s", item.dc_id, ip_bytes, 443, auth_key)
             session_string = "1" + base64.urlsafe_b64encode(raw).decode("ascii")
 
-            # Verify via connect
-            client = sm._make_client(session_string, item.proxy or "socks5://8atEWTnm:ChxCfQwS@154.196.87.115:62679")
+            # Verify via connect (try without proxy first — server has direct Telegram access)
+            client = sm._make_client(session_string, None)
             await client.connect()
             me = await client.get_me()
             await client.disconnect()
