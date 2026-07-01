@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
 from src.database import get_session
-from src.models import Account, AccountStatus
+from src.models import Account, AccountStatus, Proxy
 import src.session_manager as sm
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
@@ -44,10 +44,17 @@ async def list_accounts(session: AsyncSession = Depends(get_session)):
 
 
 @router.post("/auth/start", status_code=202)
-async def start_auth(data: AddPhoneRequest):
+async def start_auth(data: AddPhoneRequest, db: AsyncSession = Depends(get_session)):
     """Send Telegram login code to the phone number."""
+    proxy = data.proxy
+    if not proxy:
+        result = await db.execute(select(Proxy).where(Proxy.is_active == True).limit(1))
+        p = result.scalar_one_or_none()
+        if p:
+            creds = f"{p.username}:{p.password}@" if p.username else ""
+            proxy = f"{p.protocol}://{creds}{p.host}:{p.port}"
     try:
-        await sm.start_auth(data.phone, proxy=data.proxy)
+        await sm.start_auth(data.phone, proxy=proxy)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"message": "Code sent", "phone": data.phone}
