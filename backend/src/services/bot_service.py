@@ -61,7 +61,9 @@ async def _bot_loop(task_id: int) -> None:
     from src.services.ai_service import generate_bot_reply, generate_new_topic
 
     last_msg_id: int = 0
-    last_proactive = datetime.utcnow()
+    # Stagger initial proactive messages: task_id offset in minutes so bots don't all fire at once
+    _stagger_minutes = (task_id % 6) * 3
+    last_proactive = datetime.utcnow() - timedelta(hours=24) + timedelta(minutes=_stagger_minutes)
 
     # Seed last_msg_id so we don't process old history on first run
     async with async_session_maker() as db:
