@@ -14,12 +14,14 @@ _running: dict[int, asyncio.Task] = {}
 
 def _resolve_chat_peer(chat_id: int):
     """Return the correct Telethon peer for a chat_id.
-    Basic group chats store negative IDs; channels use -100 prefix."""
+    Convention: basic groups stored as negative raw ID (-group_id),
+    supergroups/channels stored with -100 prefix (-100{channel_id})."""
     from telethon.tl.types import PeerChat, PeerChannel
     if chat_id < 0:
         raw = -chat_id
-        if raw > 1_000_000_000:
-            return PeerChannel(raw)
+        # -100 prefix format (Bot API convention for supergroups/channels)
+        if raw > 1_000_000_000_000:
+            return PeerChannel(raw - 1_000_000_000_000)
         return PeerChat(raw)
     return chat_id
 
