@@ -49,42 +49,56 @@ Return exactly 3 options separated by "---", no numbering, no extra text."""
     return options[:3]
 
 
-_CASUAL_RULES = (
-    "ВАЖНО — стиль живого чата:\n"
-    "- Пиши как реальный человек в мессенджере: коротко, без пафоса\n"
-    "- Можно смеяться: ахахах, лол, кек, хаха — но не каждое сообщение\n"
-    "- Можно реагировать: 'ну ты дал', 'да ладно', 'серьёзно?', 'не верю', 'стоп стоп'\n"
-    "- Иногда пиши со строчной и без точки в конце\n"
-    "- НЕ пиши официально, НЕ используй слова 'безусловно', 'действительно', 'несомненно'\n"
-    "- НЕ начинай с имени собеседника, НЕ объясняй очевидное\n"
-    "- Максимум 1-2 коротких предложения. Иногда одно слово или эмодзи как реакция."
+_CHAT_STYLE = (
+    "Ты пишешь в групповой чат в Telegram. Стиль — живая переписка между знакомыми:\n"
+    "• Коротко. 1-3 предложения max, иногда одно слово или эмодзи.\n"
+    "• Разговорно: строчные буквы, без точки в конце — нормально.\n"
+    "• Эмоции живые: 'ахахах', 'да ладно', 'стоп', 'серьёзно??', 'не верю', 'кек', заглавные от удивления.\n"
+    "• Продолжай мысль собеседника или возражай конкретно — не дежурно, а по делу.\n"
+    "• НЕ начинай с имени. НЕ используй 'безусловно', 'действительно', 'стоит отметить'.\n"
+    "• Иногда добавь что-то от себя из своей жизни/опыта — 1 деталь, без занудства."
 )
 
 
-async def generate_bot_reply(conversation: list[dict], persona: str) -> str:
-    """Generate a single natural reply for a bot persona in a group chat."""
+async def generate_bot_reply(
+    conversation: list[dict],
+    persona: str,
+    trigger_text: str = "",
+    trigger_sender: str = "",
+) -> str:
+    """Reply to a specific message in the group chat, building on that thread."""
     history_text = "\n".join(f"{m['sender']}: {m['text']}" for m in conversation[-10:])
+
+    if trigger_text:
+        focus = (
+            f"\nТы реагируешь конкретно на это сообщение от {trigger_sender}:\n"
+            f"«{trigger_text}»\n"
+            "Прими его позицию, возрази, добавь своё — но не просто 'согласен' или 'интересно'."
+        )
+    else:
+        focus = "\nОтветь на последнее сообщение в разговоре."
+
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
-        max_tokens=120,
-        system=f"{persona}\n\n{_CASUAL_RULES}",
+        max_tokens=130,
+        system=f"{persona}\n\n{_CHAT_STYLE}",
         messages=[{
             "role": "user",
-            "content": f"Разговор в чате:\n{history_text}\n\nТвоя реакция (1-2 предложения max):"
+            "content": f"Контекст чата:\n{history_text}{focus}"
         }],
     )
     return message.content[0].text.strip()
 
 
 async def generate_new_topic(persona: str) -> str:
-    """Generate a new conversation topic to post proactively."""
+    """Throw something into the chat unprompted — news, observation, question from daily life."""
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
-        max_tokens=100,
+        max_tokens=110,
         system=(
-            f"{persona}\n\n{_CASUAL_RULES}\n\n"
-            "Ты хочешь что-то закинуть в чат — новость, вопрос, наблюдение из жизни. "
-            "Пиши как будто только что увидел/подумал, не как объявление."
+            f"{persona}\n\n{_CHAT_STYLE}\n\n"
+            "Ты сам(а) что-то закидываешь в чат — как будто только что увидел новость, "
+            "что-то случилось, или просто мысль в голове. Не объявление, а живая реплика."
         ),
         messages=[{
             "role": "user",
