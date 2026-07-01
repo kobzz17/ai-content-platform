@@ -12,6 +12,18 @@ logger = logging.getLogger(__name__)
 _running: dict[int, asyncio.Task] = {}
 
 
+def _resolve_chat_peer(chat_id: int):
+    """Return the correct Telethon peer for a chat_id.
+    Basic group chats store negative IDs; channels use -100 prefix."""
+    from telethon.tl.types import PeerChat, PeerChannel
+    if chat_id < 0:
+        raw = -chat_id
+        if raw > 1_000_000_000:
+            return PeerChannel(raw)
+        return PeerChat(raw)
+    return chat_id
+
+
 async def start_task(task_id: int) -> None:
     if task_id in _running:
         return
@@ -60,7 +72,8 @@ async def _bot_loop(task_id: int) -> None:
 
     try:
         client = await sm.get_client(account.id, account.session_string, account.proxy)
-        async for msg in client.iter_messages(task.chat_id, limit=1):
+        chat_peer = _resolve_chat_peer(task.chat_id)
+        async for msg in client.iter_messages(chat_peer, limit=1):
             last_msg_id = msg.id
     except Exception as exc:
         logger.warning("Task %d: seeding last_msg_id failed: %s", task_id, exc)
@@ -77,11 +90,12 @@ async def _bot_loop(task_id: int) -> None:
                 account = await db.get(Account, task.account_id)
 
             client = await sm.get_client(account.id, account.session_string, account.proxy)
+            chat_peer = _resolve_chat_peer(task.chat_id)
 
             # Collect new messages since last poll
             new_messages = []
             new_max_id = last_msg_id
-            async for msg in client.iter_messages(task.chat_id, limit=30, min_id=last_msg_id):
+            async for msg in client.iter_messages(chat_peer, limit=30, min_id=last_msg_id):
                 if msg.id > new_max_id:
                     new_max_id = msg.id
                 if msg.text and not msg.out:
@@ -90,7 +104,7 @@ async def _bot_loop(task_id: int) -> None:
 
             if new_messages and random.randint(1, 100) <= task.reply_probability:
                 history = []
-                async for msg in client.iter_messages(task.chat_id, limit=10):
+                async for msg in client.iter_messages(chat_peer, limit=10):
                     if msg.text:
                         sender = "Я" if msg.out else (
                             getattr(msg.sender, "first_name", None) or "Участник"
@@ -102,7 +116,7 @@ async def _bot_loop(task_id: int) -> None:
                 await asyncio.sleep(delay)
 
                 reply = await generate_bot_reply(history, task.persona)
-                await client.send_message(task.chat_id, reply)
+                await client.send_message(chat_peer, reply)
 
                 async with async_session_maker() as db:
                     db.add(BotLog(task_id=task_id, action="replied", text=reply))
@@ -118,7 +132,7 @@ async def _bot_loop(task_id: int) -> None:
             if (task.proactive_interval and
                     datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval)):
                 topic = await generate_new_topic(task.persona)
-                await client.send_message(task.chat_id, topic)
+                await client.send_message(chat_peer, topic)
 
                 async with async_session_maker() as db:
                     db.add(BotLog(task_id=task_id, action="topic_posted", text=topic))
