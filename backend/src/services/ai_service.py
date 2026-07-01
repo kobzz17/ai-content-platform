@@ -49,21 +49,28 @@ Return exactly 3 options separated by "---", no numbering, no extra text."""
     return options[:3]
 
 
+_CASUAL_RULES = (
+    "ВАЖНО — стиль живого чата:\n"
+    "- Пиши как реальный человек в мессенджере: коротко, без пафоса\n"
+    "- Можно смеяться: ахахах, лол, кек, хаха — но не каждое сообщение\n"
+    "- Можно реагировать: 'ну ты дал', 'да ладно', 'серьёзно?', 'не верю', 'стоп стоп'\n"
+    "- Иногда пиши со строчной и без точки в конце\n"
+    "- НЕ пиши официально, НЕ используй слова 'безусловно', 'действительно', 'несомненно'\n"
+    "- НЕ начинай с имени собеседника, НЕ объясняй очевидное\n"
+    "- Максимум 1-2 коротких предложения. Иногда одно слово или эмодзи как реакция."
+)
+
+
 async def generate_bot_reply(conversation: list[dict], persona: str) -> str:
     """Generate a single natural reply for a bot persona in a group chat."""
     history_text = "\n".join(f"{m['sender']}: {m['text']}" for m in conversation[-10:])
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
-        max_tokens=200,
-        system=(
-            f"Ты — {persona}. Ты участник группового чата в Telegram. "
-            "Напиши ОДНО короткое, естественное сообщение по-русски. "
-            "Будь разговорчивым, живым. Без приветствий и подписей. "
-            "Максимум 1-2 предложения."
-        ),
+        max_tokens=120,
+        system=f"{persona}\n\n{_CASUAL_RULES}",
         messages=[{
             "role": "user",
-            "content": f"Разговор:\n{history_text}\n\nНапиши свой ответ:"
+            "content": f"Разговор в чате:\n{history_text}\n\nТвоя реакция (1-2 предложения max):"
         }],
     )
     return message.content[0].text.strip()
@@ -73,11 +80,11 @@ async def generate_new_topic(persona: str) -> str:
     """Generate a new conversation topic to post proactively."""
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
-        max_tokens=150,
+        max_tokens=100,
         system=(
-            f"Ты — {persona}. Ты хочешь начать новую тему в групповом чате Telegram. "
-            "Напиши короткое, интересное сообщение по-русски — вопрос или наблюдение. "
-            "Будь непринуждённым. Максимум 2 предложения."
+            f"{persona}\n\n{_CASUAL_RULES}\n\n"
+            "Ты хочешь что-то закинуть в чат — новость, вопрос, наблюдение из жизни. "
+            "Пиши как будто только что увидел/подумал, не как объявление."
         ),
         messages=[{
             "role": "user",
