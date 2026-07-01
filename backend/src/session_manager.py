@@ -31,6 +31,8 @@ def _make_client(session_string: str = "", proxy: str | None = None) -> Telegram
         settings.telegram_api_id,
         settings.telegram_api_hash,
         proxy=proxy_params,
+        timeout=30,
+        connection_retries=3,
     )
 
 
