@@ -7,6 +7,7 @@ import logging
 import time
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.network.connection.tcpobfuscated import ConnectionTcpObfuscated
 from telethon.tl.types import User
 from src.config import settings
 
@@ -30,6 +31,7 @@ def _make_client(session_string: str = "", proxy: str | None = None) -> Telegram
         StringSession(session_string),
         settings.telegram_api_id,
         settings.telegram_api_hash,
+        connection=ConnectionTcpObfuscated,
         proxy=proxy_params,
         timeout=30,
         connection_retries=3,
