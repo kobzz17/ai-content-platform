@@ -86,7 +86,7 @@ async def _cleanup_expired_auth() -> None:
         logger.info("Cleaned up expired auth session for %s", phone)
 
 
-async def start_auth(phone: str) -> None:
+async def start_auth(phone: str, proxy: str | None = None) -> None:
     """Step 1: send code to phone number."""
     await _cleanup_expired_auth()
     # Disconnect previous pending auth for this phone if any
@@ -96,7 +96,7 @@ async def start_auth(phone: str) -> None:
             await old.disconnect()
         except Exception:
             pass
-    client = _make_client()
+    client = _make_client(proxy=proxy)
     await client.connect()
     result = await client.send_code_request(phone)
     _auth_clients[phone] = client

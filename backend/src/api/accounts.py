@@ -47,7 +47,7 @@ async def list_accounts(session: AsyncSession = Depends(get_session)):
 async def start_auth(data: AddPhoneRequest):
     """Send Telegram login code to the phone number."""
     try:
-        await sm.start_auth(data.phone)
+        await sm.start_auth(data.phone, proxy=data.proxy)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"message": "Code sent", "phone": data.phone}
