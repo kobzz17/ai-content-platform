@@ -38,9 +38,11 @@ def _parse_proxy(proxy_url: str) -> tuple | None:
     """Parse socks5://user:pass@host:port into Telethon proxy tuple."""
     try:
         from urllib.parse import urlparse
-        import socks
         p = urlparse(proxy_url)
-        return (socks.SOCKS5, p.hostname, p.port, True, p.username, p.password)
+        scheme = p.scheme  # 'socks5', 'socks4', 'http'
+        if p.username:
+            return (scheme, p.hostname, p.port, True, p.username, p.password)
+        return (scheme, p.hostname, p.port)
     except Exception:
         return None
 
