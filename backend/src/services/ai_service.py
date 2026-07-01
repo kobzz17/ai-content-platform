@@ -1,13 +1,20 @@
+import httpx
 import anthropic
 from src.config import settings
 
 _client: anthropic.AsyncAnthropic | None = None
 
+_PROXY_URL = "socks5://134.122.1.61:11679"
+
 
 def _get_client() -> anthropic.AsyncAnthropic:
     global _client
     if _client is None:
-        _client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        http_client = httpx.AsyncClient(proxy=_PROXY_URL)
+        _client = anthropic.AsyncAnthropic(
+            api_key=settings.anthropic_api_key,
+            http_client=http_client,
+        )
     return _client
 
 
