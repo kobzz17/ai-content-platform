@@ -98,6 +98,10 @@ export default function App() {
             if (selectedAccountId === id) setSelectedAccountId(null);
             setAccounts((prev) => prev.filter((a) => a.id !== id));
           }}
+          onRename={async (id, newLabel) => {
+            const updated = await api.updateAccount(id, { label: newLabel });
+            setAccounts((prev) => prev.map((a) => (a.id === id ? updated : a)));
+          }}
         />
       </div>
 

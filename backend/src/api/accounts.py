@@ -486,6 +486,29 @@ async def import_session_files(
     return BatchImportResult(ok=[AccountOut.model_validate(a) for a in ok], failed=failed)
 
 
+class UpdateAccountRequest(BaseModel):
+    label: str | None = None
+    proxy: str | None = None
+
+
+@router.patch("/{account_id}", response_model=AccountOut)
+async def update_account(
+    account_id: int,
+    data: UpdateAccountRequest,
+    session: AsyncSession = Depends(get_session),
+):
+    account = await session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404)
+    if data.label is not None:
+        account.label = data.label.strip()
+    if data.proxy is not None:
+        account.proxy = data.proxy.strip() or None
+    await session.commit()
+    await session.refresh(account)
+    return account
+
+
 @router.delete("/{account_id}", status_code=204)
 async def remove_account(account_id: int, session: AsyncSession = Depends(get_session)):
     account = await session.get(Account, account_id)

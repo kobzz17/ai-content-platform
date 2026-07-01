@@ -24,6 +24,8 @@ export const api = {
     phone: string; code: string; label: string;
     password?: string; proxy?: string;
   }) => req<Account>("/accounts/auth/confirm", { method: "POST", body: JSON.stringify(data) }),
+  updateAccount: (id: number, data: { label?: string; proxy?: string }) =>
+    req<Account>(`/accounts/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   removeAccount: (id: number) =>
     req(`/accounts/${id}`, { method: "DELETE" }),
   importBatch: (file: File) => {
