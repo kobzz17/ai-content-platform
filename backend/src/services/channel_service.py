@@ -105,16 +105,17 @@ def _check_session_mode(task: ChannelTask) -> str | None:
             return "случайный офлайн-период"
         return None
 
+    # Use Moscow time (UTC+3) for hour-based modes
+    msk_hour = (now.hour + 3) % 24
+
     if mode == SessionMode.work_hours:
-        hour = now.hour  # UTC+0; adjust if needed
-        if not (9 <= hour < 20):
-            return f"вне рабочих часов (сейчас {hour}:00 UTC)"
+        if not (9 <= msk_hour < 20):
+            return f"вне рабочих часов (сейчас {msk_hour}:00 МСК)"
         return None
 
     if mode == SessionMode.evening:
-        hour = now.hour
-        if not (18 <= hour < 23):
-            return f"вне вечерних часов (сейчас {hour}:00 UTC)"
+        if not (18 <= msk_hour < 23):
+            return f"вне вечерних часов (сейчас {msk_hour}:00 МСК)"
         return None
 
     return None

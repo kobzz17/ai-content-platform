@@ -109,8 +109,10 @@ async def _bot_loop(task_id: int) -> None:
         _init_task = await db.get(BotTask, task_id)
         _pi = _init_task.proactive_interval if _init_task and _init_task.proactive_interval else 60
 
-    # Offset last_proactive so all bots don't fire at the same time after restart
-    last_proactive = datetime.utcnow() - timedelta(minutes=random.uniform(0, _pi))
+    # First proactive post within 10-60 min of startup (spread bots out a bit)
+    # After that, full proactive_interval applies
+    first_post_delay = random.uniform(10, 60)
+    last_proactive = datetime.utcnow() - timedelta(minutes=_pi) + timedelta(minutes=first_post_delay)
 
     async with async_session_maker() as db:
         task = await db.get(BotTask, task_id)
