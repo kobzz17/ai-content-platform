@@ -175,8 +175,13 @@ async def _bot_loop(task_id: int) -> None:
     try:
         client = await sm.get_client(account.id, account.session_string, account.proxy)
         chat_peer = _resolve_chat_peer(task.chat_id)
-        async for msg in client.iter_messages(chat_peer, limit=1):
-            last_msg_id = msg.id
+        # Seed to 30 min ago so messages posted before restart are still seen as "new"
+        cutoff = datetime.utcnow() - timedelta(minutes=30)
+        async for msg in client.iter_messages(chat_peer, limit=100):
+            msg_time = msg.date.replace(tzinfo=None) if msg.date.tzinfo else msg.date
+            if msg_time < cutoff:
+                last_msg_id = msg.id
+                break
     except Exception as exc:
         logger.warning("Task %d: seeding last_msg_id failed: %s", task_id, exc)
 
