@@ -189,7 +189,15 @@ async def _channel_loop(task_id: int) -> None:
                 keyword = random.choice(keywords)
                 await _find_and_subscribe(client, task_id, keyword, task.max_channels, subscriptions)
 
-            # ── Phase 2: Check 1-2 random channels per iteration ─────────
+            # ── Phase 2: Browse a random channel WITHOUT subscribing (40% chance) ──
+            # Simulates a human who just found something, reads it and reacts
+            if daily_count < task.max_daily_actions and random.randint(1, 100) <= 40:
+                keywords = [k.strip() for k in task.keywords.split(",")]
+                keyword = random.choice(keywords)
+                added = await _browse_without_subscribing(client, task_id, task, keyword, generate_channel_comment)
+                daily_count += added
+
+            # ── Phase 3: Check 1-3 subscribed channels ────────────────────
             async with async_session_maker() as db:
                 subs_result = await db.execute(
                     select(ChannelSubscription).where(ChannelSubscription.task_id == task_id)
@@ -197,15 +205,15 @@ async def _channel_loop(task_id: int) -> None:
                 subscriptions = subs_result.scalars().all()
 
             if subscriptions:
-                pick_count = random.randint(1, min(2, len(subscriptions)))
+                pick_count = random.randint(1, min(3, len(subscriptions)))
                 to_process = random.sample(subscriptions, pick_count)
 
                 for i, sub in enumerate(to_process):
                     if daily_count >= task.max_daily_actions:
                         break
-                    # Human-like pause between channels (5-20 min)
+                    # Human-like pause between channels (1-5 min)
                     if i > 0:
-                        await asyncio.sleep(random.uniform(60, 3 * 60))
+                        await asyncio.sleep(random.uniform(60, 5 * 60))
                     daily_count += await _process_channel(
                         client, task, sub, generate_channel_comment
                     )
@@ -291,6 +299,97 @@ async def _find_and_subscribe(client, task_id: int, keyword: str, max_channels: 
                 logger.warning("Task %d: failed to join %s: %s", task_id, channel.title, e)
     except Exception as e:
         logger.error("Task %d: channel search failed: %s", task_id, e)
+
+
+async def _browse_without_subscribing(client, task_id: int, task, keyword: str, generate_comment_fn) -> int:
+    """Visit a random channel by keyword, react/comment without joining."""
+    from telethon.tl.functions.contacts import SearchRequest
+    from telethon.tl.functions.messages import SendReactionRequest
+    from telethon.tl.types import ReactionEmoji
+
+    actions_taken = 0
+    try:
+        result = await client(SearchRequest(q=keyword, limit=20))
+        candidates = [
+            c for c in result.chats
+            if getattr(c, "broadcast", False)
+            and not getattr(c, "restricted", False)
+        ]
+        if not candidates:
+            return 0
+
+        # Pick a random channel we haven't joined
+        random.shuffle(candidates)
+        channel = None
+        for c in candidates:
+            if await _is_russian_channel(client, c):
+                channel = c
+                break
+        if not channel:
+            return 0
+
+        # Simulate reading (10-60 sec)
+        await asyncio.sleep(random.uniform(10, 60))
+
+        # Grab a recent post
+        post = None
+        async for msg in client.iter_messages(channel, limit=10):
+            if msg.text and len(msg.text) > 30:
+                post = msg
+                break
+        if not post:
+            return 0
+
+        logger.info("Task %d: browsing (no join) %s", task_id, channel.title)
+
+        # React (based on reaction_probability)
+        if random.randint(1, 100) <= task.reaction_probability:
+            try:
+                emoji = random.choice(REACTIONS)
+                await client(SendReactionRequest(
+                    peer=channel,
+                    msg_id=post.id,
+                    reaction=[ReactionEmoji(emoticon=emoji)],
+                ))
+                async with async_session_maker() as db:
+                    db.add(ChannelLog(
+                        task_id=task_id,
+                        channel_title=channel.title,
+                        action="reacted",
+                        text=f"{emoji} · {post.text[:120]}",
+                    ))
+                    await db.commit()
+                actions_taken += 1
+                await asyncio.sleep(random.uniform(15, 90))
+            except Exception as e:
+                logger.debug("Task %d: browse react failed in %s: %s", task_id, channel.title, e)
+
+        # Comment (based on comment_probability, only if channel has discussion)
+        if random.randint(1, 100) <= task.comment_probability:
+            try:
+                from telethon.tl.functions.channels import GetFullChannelRequest
+                full = await client(GetFullChannelRequest(channel))
+                linked_id = full.full_chat.linked_chat_id
+                if linked_id:
+                    await asyncio.sleep(random.uniform(30, 120))
+                    comment = await generate_comment_fn(post.text, task.persona)
+                    await client.send_message(linked_id, comment, comment_to=post.id)
+                    async with async_session_maker() as db:
+                        db.add(ChannelLog(
+                            task_id=task_id,
+                            channel_title=channel.title,
+                            action="commented",
+                            text=comment,
+                        ))
+                        await db.commit()
+                    actions_taken += 1
+            except Exception as e:
+                logger.debug("Task %d: browse comment failed in %s: %s", task_id, channel.title, e)
+
+    except Exception as e:
+        logger.warning("Task %d: browse_without_subscribing failed: %s", task_id, e)
+
+    return actions_taken
 
 
 async def _process_channel(client, task, sub: ChannelSubscription, generate_comment_fn) -> int:
