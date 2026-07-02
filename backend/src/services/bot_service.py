@@ -14,7 +14,11 @@ _running: dict[int, asyncio.Task] = {}
 # Shared: when did last message appear in the group (any bot)
 # Used to detect "active window" and boost reply chance during conversation burst
 _last_group_activity: datetime = datetime.utcnow() - timedelta(hours=12)
-_BURST_WINDOW_MIN = 45  # minutes — how long a burst stays "warm"
+_BURST_WINDOW_MIN = 30  # minutes — how long a burst stays "warm"
+
+# Global minimum gap between any two bot messages (prevents flooding)
+_last_bot_post: datetime = datetime.utcnow() - timedelta(hours=12)
+_MIN_BOT_INTERVAL_MIN = 8  # minimum minutes between any bot messages
 
 
 def _resolve_chat_peer(chat_id: int):
@@ -90,16 +94,23 @@ async def _fetch_news_snippet(account_id: int, proxy: str | None) -> str:
 
 
 async def _bot_loop(task_id: int) -> None:
-    global _last_group_activity
+    global _last_group_activity, _last_bot_post
     from src.services.ai_service import generate_bot_reply, generate_new_topic
 
     last_msg_id: int = 0
-    last_proactive = datetime.utcnow() - timedelta(hours=24)
     last_replied: datetime = datetime.utcnow() - timedelta(hours=24)  # per-bot cooldown
-    _REPLY_COOLDOWN_MIN = 25  # don't reply twice within 25 min
+    _REPLY_COOLDOWN_MIN = 40  # don't reply twice within 40 min
 
     # Heavy random initial stagger: 0–20 minutes so bots never align
     await asyncio.sleep(random.uniform(0, 1200))
+
+    # Load task to get proactive_interval, then stagger proactive start randomly
+    async with async_session_maker() as db:
+        _init_task = await db.get(BotTask, task_id)
+        _pi = _init_task.proactive_interval if _init_task and _init_task.proactive_interval else 60
+
+    # Offset last_proactive so all bots don't fire at the same time after restart
+    last_proactive = datetime.utcnow() - timedelta(minutes=random.uniform(0, _pi))
 
     async with async_session_maker() as db:
         task = await db.get(BotTask, task_id)
@@ -149,7 +160,8 @@ async def _bot_loop(task_id: int) -> None:
             effective_prob = task.reply_probability if in_burst else max(task.reply_probability // 6, 3)
 
             since_last_reply = (datetime.utcnow() - last_replied).total_seconds() / 60
-            can_reply = since_last_reply >= _REPLY_COOLDOWN_MIN
+            since_last_bot = (datetime.utcnow() - _last_bot_post).total_seconds() / 60
+            can_reply = since_last_reply >= _REPLY_COOLDOWN_MIN and since_last_bot >= _MIN_BOT_INTERVAL_MIN
 
             if new_messages and can_reply and random.randint(1, 100) <= effective_prob:
                 trigger = new_messages[0]
@@ -179,6 +191,7 @@ async def _bot_loop(task_id: int) -> None:
                 )
                 await client.send_message(chat_peer, reply)
                 _last_group_activity = datetime.utcnow()
+                _last_bot_post = datetime.utcnow()
 
                 async with async_session_maker() as db:
                     db.add(BotLog(task_id=task_id, action="replied", text=reply))
@@ -192,8 +205,10 @@ async def _bot_loop(task_id: int) -> None:
                 logger.info("Task %d replied in chat %d", task_id, task.chat_id)
 
             # Proactive: one bot posts something new, triggering a burst
+            since_last_bot_proactive = (datetime.utcnow() - _last_bot_post).total_seconds() / 60
             if (task.proactive_interval and
-                    datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval)):
+                    datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval) and
+                    since_last_bot_proactive >= _MIN_BOT_INTERVAL_MIN):
                 # 30% chance: grab a real news snippet from subscribed channels
                 news = ""
                 if random.randint(1, 100) <= 30:
@@ -201,6 +216,7 @@ async def _bot_loop(task_id: int) -> None:
                 topic = await generate_new_topic(task.persona, news_snippet=news)
                 await client.send_message(chat_peer, topic)
                 _last_group_activity = datetime.utcnow()
+                _last_bot_post = datetime.utcnow()
 
                 async with async_session_maker() as db:
                     db.add(BotLog(task_id=task_id, action="topic_posted", text=topic))
