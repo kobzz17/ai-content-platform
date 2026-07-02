@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import re
 from datetime import datetime, timedelta
 from sqlalchemy import select, func
 from src.database import async_session_maker
@@ -10,6 +11,26 @@ import src.session_manager as sm
 logger = logging.getLogger(__name__)
 
 REACTIONS = ["👍", "❤", "🔥", "👏", "🤔", "🎉", "😮"]
+
+_CYRILLIC_RE = re.compile(r'[а-яА-ЯёЁ]')
+
+
+def _has_cyrillic(text: str) -> bool:
+    return bool(_CYRILLIC_RE.search(text))
+
+
+async def _is_russian_channel(client, channel) -> bool:
+    """Return True if the channel is Russian-language."""
+    if _has_cyrillic(channel.title):
+        return True
+    # Title is not in Russian — peek at one recent message
+    try:
+        async for msg in client.iter_messages(channel, limit=3):
+            if msg.text and _has_cyrillic(msg.text):
+                return True
+    except Exception:
+        pass
+    return False
 
 _running: dict[int, asyncio.Task] = {}
 _triggers: dict[int, asyncio.Event] = {}  # set to wake up the loop early
@@ -240,6 +261,10 @@ async def _find_and_subscribe(client, task_id: int, keyword: str, max_channels: 
         for channel in candidates:
             if joined >= needed:
                 break
+            # Skip non-Russian channels
+            if not await _is_russian_channel(client, channel):
+                logger.info("Task %d: skipping non-Russian channel %s", task_id, channel.title)
+                continue
             try:
                 await client(JoinChannelRequest(channel))
                 async with async_session_maker() as db:
@@ -283,6 +308,11 @@ async def _process_channel(client, task, sub: ChannelSubscription, generate_comm
             # Refresh dialog cache so Telethon learns access hashes, then retry
             await client.get_dialogs(limit=200)
             channel = await client.get_entity(sub.channel_id)
+
+        # Skip if channel is not Russian-language
+        if not await _is_russian_channel(client, channel):
+            logger.info("Task %d: skipping non-Russian channel %s", task.id, sub.channel_title)
+            return 0
 
         new_posts = []
         async for msg in client.iter_messages(channel, limit=10, min_id=sub.last_post_id):
