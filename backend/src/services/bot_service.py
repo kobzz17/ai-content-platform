@@ -149,16 +149,16 @@ async def _bot_loop(task_id: int) -> None:
     _REPLY_COOLDOWN_MIN = 40
     _REACT_COOLDOWN_MIN = 15  # react to group messages at most once per 15 min per bot
 
-    # Heavy random initial stagger: 0–20 minutes so bots never align
-    await asyncio.sleep(random.uniform(0, 1200))
+    # Small stagger so bots don't all fire at the exact same second
+    await asyncio.sleep(random.uniform(0, 180))  # 0-3 min
 
     # Load task to get proactive_interval
     async with async_session_maker() as db:
         _init_task = await db.get(BotTask, task_id)
         _pi = _init_task.proactive_interval if _init_task and _init_task.proactive_interval else 60
 
-    # First proactive post within 10-60 min of startup
-    first_post_delay = random.uniform(10, 60)
+    # First proactive post within 5-15 min of startup (spread across bots)
+    first_post_delay = random.uniform(5, 15)
     last_proactive = datetime.utcnow() - timedelta(minutes=_pi) + timedelta(minutes=first_post_delay)
 
     async with async_session_maker() as db:
