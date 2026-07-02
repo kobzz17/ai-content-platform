@@ -83,6 +83,8 @@ async def generate_bot_reply(
     trigger_sender: str = "",
     is_question: bool = False,
     opinion_stance: str | None = None,
+    known_friends: list[str] | None = None,
+    own_recent: list[str] | None = None,
 ) -> str:
     """Reply to a specific message in the group chat, building on that thread."""
     history_text = "\n".join(f"{m['sender']}: {m['text']}" for m in conversation[-10:])
@@ -108,13 +110,21 @@ async def generate_bot_reply(
     else:
         focus = "\nОтветь на последнее сообщение в разговоре."
 
+    friends_ctx = ""
+    if known_friends:
+        friends_ctx = f"\nЗнакомые в этом чате: {', '.join(known_friends[:5])}. Они свои — можешь обращаться к ним по имени."
+
+    recent_ctx = ""
+    if own_recent:
+        recent_ctx = f"\nТы уже писал(а): «{' / '.join(own_recent[-3:])}». Не повторяй эти мысли дословно."
+
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
         max_tokens=130,
         system=f"{persona}\n\n{_CHAT_STYLE}",
         messages=[{
             "role": "user",
-            "content": f"Контекст чата:\n{history_text}{focus}"
+            "content": f"Контекст чата:\n{history_text}{focus}{friends_ctx}{recent_ctx}"
         }],
     )
     result = message.content[0].text.strip()
@@ -130,8 +140,9 @@ _TOPIC_PROMPTS = {
         "просто живая мелочь из жизни. 1-2 предложения."
     ),
     "plans": (
-        "Спроси у ребят про планы — на вечер, выходные, или предложи что-то вместе сделать. "
-        "Может кино, кафе, встреча, или просто 'кто что делает?'. Очень коротко."
+        "Брось в чат что-нибудь живое — что делаешь, что на уме, планы или просто спроси "
+        "про чужие дела. Тема абсолютно любая: вечер, работа, еда, хобби, покупка, поездка, "
+        "кино, кафе, встреча, музыка, погода — всё что угодно. Разговорно, одно предложение."
     ),
     "news": (
         "Поделись новостью или тем, что только что прочитал(а) — что-то интересное, смешное "
@@ -139,9 +150,11 @@ _TOPIC_PROMPTS = {
         "Не придумывай конкретных цифр/имён, пиши обобщённо. 1-2 предложения."
     ),
     "question": (
-        "Задай вопрос группе — спроси совет, мнение, рекомендацию. Что-то практическое "
-        "из твоей жизни. 'ребят, кто знает...', 'а вы как обычно...', 'куда бы посоветовали'. "
-        "Одно короткое предложение."
+        "Задай группе вопрос — за советом, мнением или рекомендацией по чему угодно: "
+        "техника, работа, хобби, покупки, еда, кафе, куда сходить, фильм/книга/игра, "
+        "отношения, деньги, поездки, бытовое, здоровье — абсолютно любая тема. "
+        "Стиль: 'ребят, кто знает...', 'а вы как...', 'что думаете про...', 'куда бы посоветовали'. "
+        "Одно предложение."
     ),
     "rant": (
         "Поныть или высказаться о чём-то раздражающем из жизни — пробки, цены, погода, "
@@ -158,7 +171,12 @@ _TOPIC_PROMPTS = {
 }
 
 
-async def generate_new_topic(persona: str, news_snippet: str = "") -> str:
+async def generate_new_topic(
+    persona: str,
+    news_snippet: str = "",
+    current_topic: str = "",
+    recent_topics: list[str] | None = None,
+) -> str:
     """Post something unprompted — personal life, plans, news, questions, rants."""
     import random
     from datetime import datetime, timezone
@@ -183,7 +201,11 @@ async def generate_new_topic(persona: str, news_snippet: str = "") -> str:
 
     extra = ""
     if news_snippet:
-        extra = f"\n\nВот реальная новость из подписанного канала, которую ты только что прочитал(а) — перескажи своими словами и добавь реакцию:\n{news_snippet[:300]}"
+        extra += f"\n\nВот реальная новость из подписанного канала, которую ты только что прочитал(а) — перескажи своими словами и добавь реакцию:\n{news_snippet[:300]}"
+    if current_topic:
+        extra += f"\n\nВ чате сейчас обсуждают: «{current_topic}». Продолжи эту тему — добавь своё мнение, уточняющий вопрос или новый угол."
+    if recent_topics:
+        extra += f"\n\nТы уже недавно говорил(а) о: {' / '.join(recent_topics[-5:])}. Выбери другую тему."
 
     message = await _get_client().messages.create(
         model=settings.anthropic_model,

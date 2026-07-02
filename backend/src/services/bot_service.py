@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+from collections import deque
 from datetime import datetime, timedelta
 from sqlalchemy import select
 from src.database import async_session_maker
@@ -24,7 +25,20 @@ _group_reacted: dict[int, set[int]] = {}  # task_id -> set of msg_ids
 
 # Track how many bots have already answered each question (msg_id -> count)
 _question_replies: dict[int, int] = {}
-_MAX_QUESTION_REPLIES = 3  # up to 3 bots answer the same question
+_MAX_QUESTION_REPLIES = 2  # at most 2 bots answer the same question
+_QUESTION_RESPONSE_CHANCE = 55  # % chance any single bot answers a given question
+
+# Active topic per group chat — for conversation continuity
+_group_active_topic: dict[int, dict] = {}
+# chat_id -> {"text": str, "started_at": datetime, "last_activity_at": datetime}
+_TOPIC_CONTINUE_WINDOW_MIN = 60  # keep extending topic for up to 60 min
+
+# Bot display names and mutual awareness
+_bot_display_name: dict[int, str] = {}  # account_id -> Telegram first_name
+_chat_known_bots: dict[int, set] = {}   # chat_id -> set of display names
+
+# Per-bot memory of recently sent messages (to avoid repetition)
+_bot_memory: dict[int, deque] = {}  # task_id -> deque(maxlen=300)
 
 
 def _resolve_chat_peer(chat_id: int):
@@ -95,6 +109,39 @@ async def _fetch_news_snippet(account_id: int, proxy: str | None) -> str:
     except Exception:
         pass
     return ""
+
+
+async def _forward_channel_post(client, chat_peer, account_id: int) -> bool:
+    """Forward a recent channel post directly to the group. Returns True on success."""
+    from src.models import ChannelTask, ChannelSubscription
+    from sqlalchemy import select as sa_select
+    try:
+        async with async_session_maker() as db:
+            r = await db.execute(sa_select(ChannelTask).where(ChannelTask.account_id == account_id))
+            ctask = r.scalars().first()
+            if not ctask:
+                return False
+            r2 = await db.execute(sa_select(ChannelSubscription).where(ChannelSubscription.task_id == ctask.id))
+            subs = r2.scalars().all()
+        if not subs:
+            return False
+        sub = random.choice(subs)
+        chan = sub.channel_username or ""
+        if not chan:
+            return False
+        target_msg = None
+        async for msg in client.iter_messages(chan, limit=10):
+            if msg.text and len(msg.text) > 50:
+                target_msg = msg
+                break
+        if not target_msg:
+            return False
+        await client.forward_messages(chat_peer, [target_msg])
+        logger.info("Account %d forwarded post from %s to group", account_id, chan)
+        return True
+    except Exception as e:
+        logger.debug("_forward_channel_post failed: %s", e)
+        return False
 
 
 async def _react_to_group_message(client, task_id: int, chat_peer, messages: list) -> None:
@@ -185,6 +232,8 @@ async def _bot_loop(task_id: int) -> None:
     except Exception as exc:
         logger.warning("Task %d: seeding last_msg_id failed: %s", task_id, exc)
 
+    _name_registered = False
+
     while True:
         try:
             async with async_session_maker() as db:
@@ -199,6 +248,18 @@ async def _bot_loop(task_id: int) -> None:
             client = await sm.get_client(account.id, account.session_string, account.proxy)
             chat_peer = _resolve_chat_peer(task.chat_id)
 
+            # Register display name on first iteration so bots know each other
+            if not _name_registered:
+                try:
+                    me = await client.get_me()
+                    my_name = me.first_name or me.username or "Участник"
+                    _bot_display_name[account.id] = my_name
+                    _chat_known_bots.setdefault(task.chat_id, set()).add(my_name)
+                    _name_registered = True
+                    logger.info("Task %d registered as '%s' in chat %d", task_id, my_name, task.chat_id)
+                except Exception:
+                    pass
+
             # Collect new messages since last poll (only from others)
             new_messages = []
             new_max_id = last_msg_id
@@ -211,6 +272,9 @@ async def _bot_loop(task_id: int) -> None:
 
             if new_messages:
                 _last_group_activity = datetime.utcnow()
+                # Any new message keeps the active topic alive
+                if task.chat_id in _group_active_topic:
+                    _group_active_topic[task.chat_id]["last_activity_at"] = datetime.utcnow()
 
             # ── React to group messages ───────────────────────────────────
             since_last_react = (datetime.utcnow() - last_reacted).total_seconds() / 60
@@ -231,7 +295,8 @@ async def _bot_loop(task_id: int) -> None:
             # Check for unanswered questions first (fast path)
             questions = [m for m in new_messages if m.text and "?" in m.text
                          and _question_replies.get(m.id, 0) < _MAX_QUESTION_REPLIES]
-            has_open_question = bool(questions)
+            # Not every bot responds to every question — adds natural variation
+            has_open_question = bool(questions) and random.randint(1, 100) <= _QUESTION_RESPONSE_CHANCE
 
             # For questions: shorter cooldowns, higher priority
             if has_open_question:
@@ -274,12 +339,19 @@ async def _bot_loop(task_id: int) -> None:
                 if is_question:
                     opinion_stance = random.choice(["conservative", "bold", "neutral"])
 
+                # Build context: who else is in this chat, what has this bot said recently
+                my_name = _bot_display_name.get(account.id, "")
+                known = list(_chat_known_bots.get(task.chat_id, set()) - {my_name})
+                own_recent = list(_bot_memory.get(task_id, deque()))[-3:]
+
                 reply = await generate_bot_reply(
                     history, task.persona,
                     trigger_text=trigger_text,
                     trigger_sender=trigger_sender,
                     is_question=is_question,
                     opinion_stance=opinion_stance,
+                    known_friends=known if known else None,
+                    own_recent=own_recent if own_recent else None,
                 )
 
                 # Questions always reply-thread; others 70%
@@ -287,6 +359,10 @@ async def _bot_loop(task_id: int) -> None:
                 await client.send_message(chat_peer, reply, reply_to=reply_to_id)
                 _last_group_activity = datetime.utcnow()
                 _last_bot_post = datetime.utcnow()
+                # Save to per-bot memory and update topic activity
+                _bot_memory.setdefault(task_id, deque(maxlen=300)).append(reply)
+                if task.chat_id in _group_active_topic:
+                    _group_active_topic[task.chat_id]["last_activity_at"] = datetime.utcnow()
 
                 if is_question:
                     _question_replies[trigger.id] = _question_replies.get(trigger.id, 0) + 1
@@ -312,23 +388,66 @@ async def _bot_loop(task_id: int) -> None:
             if (task.proactive_interval and
                     datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval) and
                     since_last_bot_proactive >= _MIN_BOT_INTERVAL_MIN):
-                news = ""
-                if random.randint(1, 100) <= 50:
-                    news = await _fetch_news_snippet(account.id, account.proxy)
-                topic = await generate_new_topic(task.persona, news_snippet=news)
-                await client.send_message(chat_peer, topic)
+
+                active_topic = _group_active_topic.get(task.chat_id)
+                should_continue = bool(
+                    active_topic and
+                    (datetime.utcnow() - active_topic["last_activity_at"]).total_seconds() / 60
+                    < _TOPIC_CONTINUE_WINDOW_MIN
+                )
+
+                # Try to forward a channel post (35% chance, only when no active topic)
+                forwarded = False
+                posted_text = ""
+                if not should_continue and random.randint(1, 100) <= 35:
+                    forwarded = await _forward_channel_post(client, chat_peer, account.id)
+
+                if not forwarded:
+                    my_name = _bot_display_name.get(account.id, "")
+                    known = list(_chat_known_bots.get(task.chat_id, set()) - {my_name})
+                    recent = [m[:60] for m in list(_bot_memory.get(task_id, deque()))[-5:]]
+                    current_t = active_topic["text"] if (should_continue and active_topic) else ""
+
+                    # News snippet only when not continuing a topic
+                    news = ""
+                    if not should_continue and random.randint(1, 100) <= 40:
+                        news = await _fetch_news_snippet(account.id, account.proxy)
+
+                    topic = await generate_new_topic(
+                        task.persona,
+                        news_snippet=news,
+                        current_topic=current_t,
+                        recent_topics=recent if recent else None,
+                    )
+                    await client.send_message(chat_peer, topic)
+                    posted_text = topic
+                    _bot_memory.setdefault(task_id, deque(maxlen=300)).append(topic)
+
+                    if not should_continue:
+                        _group_active_topic[task.chat_id] = {
+                            "text": topic[:120],
+                            "started_at": datetime.utcnow(),
+                            "last_activity_at": datetime.utcnow(),
+                        }
+                    elif active_topic:
+                        active_topic["last_activity_at"] = datetime.utcnow()
+                else:
+                    posted_text = "[forward]"
+                    _bot_memory.setdefault(task_id, deque(maxlen=300)).append("[переслал пост из канала]")
+
                 _last_group_activity = datetime.utcnow()
                 _last_bot_post = datetime.utcnow()
 
                 async with async_session_maker() as db:
-                    db.add(BotLog(task_id=task_id, action="topic_posted", text=topic))
+                    db.add(BotLog(task_id=task_id, action="topic_posted", text=posted_text))
                     t = await db.get(BotTask, task_id)
                     if t:
                         t.last_action_at = datetime.utcnow()
                     await db.commit()
 
                 last_proactive = datetime.utcnow()
-                logger.info("Task %d posted topic in chat %d", task_id, task.chat_id)
+                logger.info("Task %d posted topic in chat %d (forwarded=%s, continuing=%s)",
+                            task_id, task.chat_id, forwarded, should_continue)
 
         except asyncio.CancelledError:
             raise

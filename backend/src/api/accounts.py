@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -96,6 +96,7 @@ _VERIFY_CONCURRENCY = 10  # сколько сессий проверяем па�
 @router.post("/import-batch", response_model=BatchImportResult, status_code=200)
 async def import_batch(
     file: UploadFile = File(...),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -195,6 +196,12 @@ async def import_batch(
             failed.append({"label": label, "error": str(e)[:120]})
 
     await session.commit()
+
+    # Auto-randomize profiles for newly imported accounts in background
+    if ok:
+        from src.services.profile_randomizer import randomize_all_accounts
+        background_tasks.add_task(randomize_all_accounts, [a.id for a in ok])
+
     return BatchImportResult(ok=[AccountOut.model_validate(a) for a in ok], failed=failed)
 
 
@@ -203,6 +210,7 @@ async def import_tdata(
     file: UploadFile = File(...),
     passcode: str = "",
     proxy: str = "",
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     session: AsyncSession = Depends(get_session),
 ):
     """
@@ -329,6 +337,12 @@ async def import_tdata(
                     failed.append({"label": acc_label, "error": str(e)[:120]})
 
     await session.commit()
+
+    # Auto-randomize profiles for newly imported tdata accounts in background
+    if ok:
+        from src.services.profile_randomizer import randomize_all_accounts
+        background_tasks.add_task(randomize_all_accounts, [a.id for a in ok])
+
     return BatchImportResult(ok=[AccountOut.model_validate(a) for a in ok], failed=failed)
 
 
@@ -507,6 +521,33 @@ async def update_account(
     await session.commit()
     await session.refresh(account)
     return account
+
+
+@router.post("/randomize-all", status_code=202)
+async def randomize_all_profiles(
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    """Randomize Telegram names & usernames for all active accounts (runs in background)."""
+    from src.services.profile_randomizer import randomize_all_accounts
+    result = await session.execute(select(Account).where(Account.is_active == True))
+    accounts = result.scalars().all()
+    ids = [a.id for a in accounts]
+    background_tasks.add_task(randomize_all_accounts, ids)
+    return {"queued": len(ids), "message": f"Запущена рандомизация {len(ids)} аккаунтов"}
+
+
+@router.post("/{account_id}/randomize-profile", status_code=200)
+async def randomize_one_profile(account_id: int, session: AsyncSession = Depends(get_session)):
+    """Randomize Telegram name & username for a single account (runs immediately)."""
+    from src.services.profile_randomizer import randomize_account_profile
+    account = await session.get(Account, account_id)
+    if not account:
+        raise HTTPException(status_code=404)
+    result = await randomize_account_profile(account_id)
+    if not result["ok"]:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
 
 
 @router.delete("/{account_id}", status_code=204)
