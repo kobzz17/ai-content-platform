@@ -39,7 +39,11 @@ export default function ProxyView({ accounts }: Props) {
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const addProxy = async () => {
     setAddError("");

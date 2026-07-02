@@ -23,6 +23,10 @@ export function ChatView({ accountId }: Props) {
     api.getDialogs(accountId)
       .then(setDialogs)
       .finally(() => setLoadingDialogs(false));
+    const interval = setInterval(() => {
+      api.getDialogs(accountId).then(setDialogs).catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
   }, [accountId]);
 
   useEffect(() => {
@@ -31,6 +35,10 @@ export function ChatView({ accountId }: Props) {
     api.getMessages(accountId, selectedChat.id)
       .then(setMessages)
       .finally(() => setLoadingMessages(false));
+    const interval = setInterval(() => {
+      api.getMessages(accountId, selectedChat.id).then(setMessages).catch(() => {});
+    }, 10000);
+    return () => clearInterval(interval);
   }, [accountId, selectedChat]);
 
   useEffect(() => {

@@ -32,6 +32,10 @@ export default function App() {
 
   useEffect(() => {
     api.listAccounts().then(setAccounts);
+    const interval = setInterval(() => {
+      api.listAccounts().then(setAccounts).catch(() => {});
+    }, 15000);
+    return () => clearInterval(interval);
   }, []);
 
   async function handleStartAuth() {

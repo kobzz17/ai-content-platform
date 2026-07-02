@@ -97,7 +97,11 @@ export default function WarmupView({ accounts }: Props) {
     }
   };
 
-  useEffect(() => { load(); }, [tab, activityAccountId]);
+  useEffect(() => {
+    load();
+    const interval = setInterval(load, 15000);
+    return () => clearInterval(interval);
+  }, [tab, activityAccountId]);
 
   const startWarmup = async () => {
     if (!startAccountId) return;
