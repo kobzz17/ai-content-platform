@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 
 _running: dict[int, asyncio.Task] = {}
 
+# Shared: when did last message appear in the group (any bot)
+# Used to detect "active window" and boost reply chance during conversation burst
+_last_group_activity: datetime = datetime.utcnow() - timedelta(hours=12)
+_BURST_WINDOW_MIN = 45  # minutes — how long a burst stays "warm"
+
 
 def _resolve_chat_peer(chat_id: int):
     from telethon.tl.types import PeerChat, PeerChannel
@@ -54,14 +59,14 @@ async def start_all_running() -> None:
 
 
 async def _bot_loop(task_id: int) -> None:
+    global _last_group_activity
     from src.services.ai_service import generate_bot_reply, generate_new_topic
 
     last_msg_id: int = 0
-    # Each bot gets a fully random initial offset (0–8 min) so they never sync up
-    await asyncio.sleep(random.uniform(0, 480))
-
-    # last_proactive in the far past so first proactive fires after proactive_interval minutes
     last_proactive = datetime.utcnow() - timedelta(hours=24)
+
+    # Heavy random initial stagger: 0–15 minutes so bots never align
+    await asyncio.sleep(random.uniform(0, 900))
 
     async with async_session_maker() as db:
         task = await db.get(BotTask, task_id)
@@ -85,14 +90,14 @@ async def _bot_loop(task_id: int) -> None:
                 if not task or task.status == TaskStatus.stopped:
                     break
                 if task.status == TaskStatus.paused:
-                    await asyncio.sleep(random.uniform(10, 30))
+                    await asyncio.sleep(random.uniform(30, 90))
                     continue
                 account = await db.get(Account, task.account_id)
 
             client = await sm.get_client(account.id, account.session_string, account.proxy)
             chat_peer = _resolve_chat_peer(task.chat_id)
 
-            # Collect new messages since last poll (only from others, not self)
+            # Collect new messages since last poll (only from others)
             new_messages = []
             new_max_id = last_msg_id
             async for msg in client.iter_messages(chat_peer, limit=50, min_id=last_msg_id):
@@ -102,13 +107,19 @@ async def _bot_loop(task_id: int) -> None:
                     new_messages.append(msg)
             last_msg_id = new_max_id
 
-            if new_messages and random.randint(1, 100) <= task.reply_probability:
-                # Pick the most recent interesting message to specifically engage with
-                trigger = new_messages[0]  # most recent (iter_messages returns newest first)
+            if new_messages:
+                _last_group_activity = datetime.utcnow()
+
+            # Reply probability: higher during burst window, nearly zero outside
+            minutes_since_activity = (datetime.utcnow() - _last_group_activity).total_seconds() / 60
+            in_burst = minutes_since_activity < _BURST_WINDOW_MIN
+            effective_prob = task.reply_probability if in_burst else max(task.reply_probability // 6, 3)
+
+            if new_messages and random.randint(1, 100) <= effective_prob:
+                trigger = new_messages[0]
                 trigger_text = trigger.text
                 trigger_sender = getattr(trigger.sender, "first_name", None) or "собеседник"
 
-                # Build conversation history for context
                 history = []
                 async for msg in client.iter_messages(chat_peer, limit=12):
                     if msg.text:
@@ -118,8 +129,11 @@ async def _bot_loop(task_id: int) -> None:
                         history.append({"sender": sender, "text": msg.text})
                 history = list(reversed(history))
 
-                # Human-like delay before responding
-                delay = random.uniform(task.min_delay, task.max_delay)
+                # Human delay: 1–8 minutes during burst, longer outside
+                if in_burst:
+                    delay = random.uniform(60, 480)
+                else:
+                    delay = random.uniform(300, 1800)
                 await asyncio.sleep(delay)
 
                 reply = await generate_bot_reply(
@@ -128,6 +142,7 @@ async def _bot_loop(task_id: int) -> None:
                     trigger_sender=trigger_sender,
                 )
                 await client.send_message(chat_peer, reply)
+                _last_group_activity = datetime.utcnow()
 
                 async with async_session_maker() as db:
                     db.add(BotLog(task_id=task_id, action="replied", text=reply))
@@ -139,11 +154,12 @@ async def _bot_loop(task_id: int) -> None:
                 last_proactive = datetime.utcnow()
                 logger.info("Task %d replied in chat %d", task_id, task.chat_id)
 
-            # Proactive: throw something into the chat on own initiative
+            # Proactive: one bot posts something new, triggering a burst
             if (task.proactive_interval and
                     datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval)):
                 topic = await generate_new_topic(task.persona)
                 await client.send_message(chat_peer, topic)
+                _last_group_activity = datetime.utcnow()
 
                 async with async_session_maker() as db:
                     db.add(BotLog(task_id=task_id, action="topic_posted", text=topic))
@@ -166,7 +182,7 @@ async def _bot_loop(task_id: int) -> None:
             except Exception:
                 pass
 
-        # Fully random sleep so no two bots are in sync
-        await asyncio.sleep(random.uniform(20, 110))
+        # Poll interval: every 2-8 minutes
+        await asyncio.sleep(random.uniform(120, 480))
 
     logger.info("Bot task %d stopped", task_id)
