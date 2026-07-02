@@ -22,6 +22,10 @@ _MIN_BOT_INTERVAL_MIN = 8
 # Track which messages each bot has already reacted to
 _group_reacted: dict[int, set[int]] = {}  # task_id -> set of msg_ids
 
+# Track how many bots have already answered each question (msg_id -> count)
+_question_replies: dict[int, int] = {}
+_MAX_QUESTION_REPLIES = 3  # up to 3 bots answer the same question
+
 
 def _resolve_chat_peer(chat_id: int):
     from telethon.tl.types import PeerChat, PeerChannel
@@ -218,15 +222,29 @@ async def _bot_loop(task_id: int) -> None:
 
             since_last_reply = (datetime.utcnow() - last_replied).total_seconds() / 60
             since_last_bot = (datetime.utcnow() - _last_bot_post).total_seconds() / 60
-            can_reply = since_last_reply >= _REPLY_COOLDOWN_MIN and since_last_bot >= _MIN_BOT_INTERVAL_MIN
 
-            if new_messages and can_reply and random.randint(1, 100) <= effective_prob:
-                # Prefer questions: if any message ends with "?", pick that one
-                questions = [m for m in new_messages if m.text and "?" in m.text]
-                trigger = questions[0] if questions else new_messages[0]
+            # Check for unanswered questions first (fast path)
+            questions = [m for m in new_messages if m.text and "?" in m.text
+                         and _question_replies.get(m.id, 0) < _MAX_QUESTION_REPLIES]
+            has_open_question = bool(questions)
+
+            # For questions: shorter cooldowns, higher priority
+            if has_open_question:
+                can_reply = since_last_reply >= 10 and since_last_bot >= 3
+            else:
+                can_reply = since_last_reply >= _REPLY_COOLDOWN_MIN and since_last_bot >= _MIN_BOT_INTERVAL_MIN
+
+            if new_messages and can_reply and (has_open_question or random.randint(1, 100) <= effective_prob):
+                # Always prioritize unanswered questions
+                if has_open_question:
+                    trigger = questions[0]
+                    is_question = True
+                else:
+                    trigger = new_messages[0]
+                    is_question = "?" in trigger.text
+
                 trigger_text = trigger.text
                 trigger_sender = getattr(trigger.sender, "first_name", None) or "собеседник"
-                is_question = "?" in trigger_text
 
                 history = []
                 async for msg in client.iter_messages(chat_peer, limit=12):
@@ -237,25 +255,41 @@ async def _bot_loop(task_id: int) -> None:
                         history.append({"sender": sender, "text": msg.text})
                 history = list(reversed(history))
 
-                # Human delay
-                if in_burst:
+                # Human delay: questions get fast response (20-90s), others normal
+                if is_question:
+                    delay = random.uniform(20, 90)
+                elif in_burst:
                     delay = random.uniform(60, 480)
                 else:
                     delay = random.uniform(300, 1800)
                 await asyncio.sleep(delay)
+
+                # For questions: give each bot a random stance so opinions vary
+                opinion_stance = None
+                if is_question:
+                    opinion_stance = random.choice(["conservative", "bold", "neutral"])
 
                 reply = await generate_bot_reply(
                     history, task.persona,
                     trigger_text=trigger_text,
                     trigger_sender=trigger_sender,
                     is_question=is_question,
+                    opinion_stance=opinion_stance,
                 )
 
-                # 70% chance to use Telegram reply-thread (visually shows who replied to whom)
-                reply_to_id = trigger.id if random.randint(1, 100) <= 70 else None
+                # Questions always reply-thread; others 70%
+                reply_to_id = trigger.id if (is_question or random.randint(1, 100) <= 70) else None
                 await client.send_message(chat_peer, reply, reply_to=reply_to_id)
                 _last_group_activity = datetime.utcnow()
                 _last_bot_post = datetime.utcnow()
+
+                if is_question:
+                    _question_replies[trigger.id] = _question_replies.get(trigger.id, 0) + 1
+                    # Keep dict bounded
+                    if len(_question_replies) > 500:
+                        oldest = list(_question_replies.keys())[:200]
+                        for k in oldest:
+                            _question_replies.pop(k, None)
 
                 async with async_session_maker() as db:
                     db.add(BotLog(task_id=task_id, action="replied", text=reply))
@@ -266,7 +300,7 @@ async def _bot_loop(task_id: int) -> None:
 
                 last_replied = datetime.utcnow()
                 last_proactive = datetime.utcnow()
-                logger.info("Task %d replied in chat %d (reply_to=%s)", task_id, task.chat_id, reply_to_id)
+                logger.info("Task %d replied in chat %d (reply_to=%s, question=%s)", task_id, task.chat_id, reply_to_id, is_question)
 
             # ── Proactive: post something new ────────────────────────────
             since_last_bot_proactive = (datetime.utcnow() - _last_bot_post).total_seconds() / 60

@@ -60,22 +60,40 @@ _CHAT_STYLE = (
 )
 
 
+_OPINION_STANCES = {
+    "conservative": (
+        "Твоя позиция: склоняйся к более осторожному/меньшему/бюджетному варианту. "
+        "Аргументируй коротко — практичность, не переплачивать, хватит для задачи."
+    ),
+    "bold": (
+        "Твоя позиция: склоняйся к более смелому/большему/продвинутому варианту. "
+        "Аргументируй коротко — раз уж брать, то нормальное, потом не пожалеешь."
+    ),
+    "neutral": (
+        "Твоя позиция: дай взвешенный ответ — зависит от задачи/бюджета/ситуации. "
+        "Уточни что именно важно учесть, 1-2 конкретных критерия."
+    ),
+}
+
+
 async def generate_bot_reply(
     conversation: list[dict],
     persona: str,
     trigger_text: str = "",
     trigger_sender: str = "",
     is_question: bool = False,
+    opinion_stance: str | None = None,
 ) -> str:
     """Reply to a specific message in the group chat, building on that thread."""
     history_text = "\n".join(f"{m['sender']}: {m['text']}" for m in conversation[-10:])
 
     if trigger_text:
         if is_question:
+            stance_hint = f"\n{_OPINION_STANCES[opinion_stance]}" if opinion_stance else ""
             focus = (
                 f"\n{trigger_sender} задал(а) вопрос:\n«{trigger_text}»\n"
-                "Дай конкретный живой ответ — своё мнение, совет или опыт. "
-                f"Можешь обратиться к {trigger_sender} по имени в начале."
+                f"Дай конкретный живой ответ — своё мнение, совет или опыт.{stance_hint} "
+                f"Можешь обратиться к {trigger_sender} по имени."
             )
         else:
             # 40% chance to address by name
