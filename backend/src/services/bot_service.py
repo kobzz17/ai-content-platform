@@ -274,7 +274,7 @@ async def _bot_loop(task_id: int) -> None:
                     datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval) and
                     since_last_bot_proactive >= _MIN_BOT_INTERVAL_MIN):
                 news = ""
-                if random.randint(1, 100) <= 30:
+                if random.randint(1, 100) <= 50:
                     news = await _fetch_news_snippet(account.id, account.proxy)
                 topic = await generate_new_topic(task.persona, news_snippet=news)
                 await client.send_message(chat_peer, topic)

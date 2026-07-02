@@ -156,12 +156,16 @@ async def generate_new_topic(persona: str, news_snippet: str = "") -> str:
     else:
         weights = {"personal": 2, "funny": 2, "rant": 2, "news": 1, "plans": 1, "question": 1, "morning": 0}
 
-    topic_type = random.choices(list(weights.keys()), weights=list(weights.values()))[0]
+    # If we have real news from a channel — use it (skip random topic)
+    if news_snippet:
+        topic_type = "news"
+    else:
+        topic_type = random.choices(list(weights.keys()), weights=list(weights.values()))[0]
     topic_instruction = _TOPIC_PROMPTS[topic_type]
 
     extra = ""
-    if news_snippet and topic_type == "news":
-        extra = f"\n\nВот реальная новость которую ты только что прочитал(а) — сошлись на неё своими словами:\n{news_snippet[:300]}"
+    if news_snippet:
+        extra = f"\n\nВот реальная новость из подписанного канала, которую ты только что прочитал(а) — перескажи своими словами и добавь реакцию:\n{news_snippet[:300]}"
 
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
