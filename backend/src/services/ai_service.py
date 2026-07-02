@@ -91,19 +91,71 @@ async def generate_bot_reply(
     return message.content[0].text.strip()
 
 
-async def generate_new_topic(persona: str) -> str:
-    """Throw something into the chat unprompted — news, observation, question from daily life."""
+_TOPIC_PROMPTS = {
+    "personal": (
+        "Расскажи что-то личное из своего дня или жизни — маленькую историю, казус, "
+        "что случилось по дороге, на работе, дома, в магазине. Не придумывай ничего пафосного, "
+        "просто живая мелочь из жизни. 1-2 предложения."
+    ),
+    "plans": (
+        "Спроси у ребят про планы — на вечер, выходные, или предложи что-то вместе сделать. "
+        "Может кино, кафе, встреча, или просто 'кто что делает?'. Очень коротко."
+    ),
+    "news": (
+        "Поделись новостью или тем, что только что прочитал(а) — что-то интересное, смешное "
+        "или возмутительное из твоей сферы (учти свои интересы). Формат: короткий пересказ + своя реакция. "
+        "Не придумывай конкретных цифр/имён, пиши обобщённо. 1-2 предложения."
+    ),
+    "question": (
+        "Задай вопрос группе — спроси совет, мнение, рекомендацию. Что-то практическое "
+        "из твоей жизни. 'ребят, кто знает...', 'а вы как обычно...', 'куда бы посоветовали'. "
+        "Одно короткое предложение."
+    ),
+    "rant": (
+        "Поныть или высказаться о чём-то раздражающем из жизни — пробки, цены, погода, "
+        "очереди, работа, люди. Эмоционально но коротко. Начни с 'блин', 'ну вот', 'всё', 'опять'."
+    ),
+    "funny": (
+        "Поделись чем-то смешным или нелепым что увидел(а) или вспомнил(а). "
+        "Может мем, видео, ситуация из жизни. Очень коротко, с реакцией типа 'умираю', 'это шедевр'."
+    ),
+    "morning": (
+        "Утреннее приветствие или мысль — не официальное, а живое: 'всем привет наконец-то', "
+        "'ну и ночка была', 'доброе утро господа', 'кто не спит?' — и добавь одну мысль или вопрос."
+    ),
+}
+
+
+async def generate_new_topic(persona: str, news_snippet: str = "") -> str:
+    """Post something unprompted — personal life, plans, news, questions, rants."""
+    import random
+    from datetime import datetime, timezone
+
+    hour = datetime.now(timezone.utc).hour
+    # Time-aware topic selection
+    if hour in range(6, 11):
+        weights = {"morning": 3, "news": 2, "personal": 2, "plans": 1, "rant": 1, "funny": 1, "question": 1}
+    elif hour in range(11, 16):
+        weights = {"plans": 2, "news": 2, "question": 2, "personal": 2, "rant": 1, "funny": 1, "morning": 0}
+    elif hour in range(16, 22):
+        weights = {"personal": 3, "rant": 2, "plans": 2, "funny": 2, "news": 1, "question": 1, "morning": 0}
+    else:
+        weights = {"personal": 2, "funny": 2, "rant": 2, "news": 1, "plans": 1, "question": 1, "morning": 0}
+
+    topic_type = random.choices(list(weights.keys()), weights=list(weights.values()))[0]
+    topic_instruction = _TOPIC_PROMPTS[topic_type]
+
+    extra = ""
+    if news_snippet and topic_type == "news":
+        extra = f"\n\nВот реальная новость которую ты только что прочитал(а) — сошлись на неё своими словами:\n{news_snippet[:300]}"
+
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
-        max_tokens=110,
-        system=(
-            f"{persona}\n\n{_CHAT_STYLE}\n\n"
-            "Ты сам(а) что-то закидываешь в чат — как будто только что увидел новость, "
-            "что-то случилось, или просто мысль в голове. Не объявление, а живая реплика."
-        ),
+        max_tokens=120,
+        system=f"{persona}\n\n{_CHAT_STYLE}",
         messages=[{
             "role": "user",
-            "content": "Напиши что-нибудь, чтобы начать разговор:"
+            "content": f"{topic_instruction}{extra}\n\nПиши:"
         }],
     )
     return message.content[0].text.strip()

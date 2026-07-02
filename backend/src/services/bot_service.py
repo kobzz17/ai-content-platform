@@ -58,15 +58,48 @@ async def start_all_running() -> None:
         logger.info("Resumed %d bot task(s) from DB", len(tasks))
 
 
+async def _fetch_news_snippet(account_id: int, proxy: str | None) -> str:
+    """Grab a recent post from a subscribed channel to share in the group."""
+    from src.models import ChannelTask, ChannelSubscription
+    from sqlalchemy import select as sa_select
+    try:
+        async with async_session_maker() as db:
+            r = await db.execute(sa_select(ChannelTask).where(ChannelTask.account_id == account_id))
+            ctask = r.scalars().first()
+            if not ctask:
+                return ""
+            r2 = await db.execute(sa_select(ChannelSubscription).where(ChannelSubscription.task_id == ctask.id))
+            subs = r2.scalars().all()
+        if not subs:
+            return ""
+        sub = random.choice(subs)
+        chan = sub.channel_username or sub.channel_title or ""
+        if not chan:
+            return ""
+        from src.database import async_session_maker as asm
+        from src.models import Account
+        async with async_session_maker() as db:
+            acc = await db.get(Account, account_id)
+        client = await sm.get_client(account_id, acc.session_string, acc.proxy)
+        async for msg in client.iter_messages(chan, limit=5):
+            if msg.text and len(msg.text) > 40:
+                return msg.text[:400]
+    except Exception:
+        pass
+    return ""
+
+
 async def _bot_loop(task_id: int) -> None:
     global _last_group_activity
     from src.services.ai_service import generate_bot_reply, generate_new_topic
 
     last_msg_id: int = 0
     last_proactive = datetime.utcnow() - timedelta(hours=24)
+    last_replied: datetime = datetime.utcnow() - timedelta(hours=24)  # per-bot cooldown
+    _REPLY_COOLDOWN_MIN = 25  # don't reply twice within 25 min
 
-    # Heavy random initial stagger: 0–15 minutes so bots never align
-    await asyncio.sleep(random.uniform(0, 900))
+    # Heavy random initial stagger: 0–20 minutes so bots never align
+    await asyncio.sleep(random.uniform(0, 1200))
 
     async with async_session_maker() as db:
         task = await db.get(BotTask, task_id)
@@ -115,7 +148,10 @@ async def _bot_loop(task_id: int) -> None:
             in_burst = minutes_since_activity < _BURST_WINDOW_MIN
             effective_prob = task.reply_probability if in_burst else max(task.reply_probability // 6, 3)
 
-            if new_messages and random.randint(1, 100) <= effective_prob:
+            since_last_reply = (datetime.utcnow() - last_replied).total_seconds() / 60
+            can_reply = since_last_reply >= _REPLY_COOLDOWN_MIN
+
+            if new_messages and can_reply and random.randint(1, 100) <= effective_prob:
                 trigger = new_messages[0]
                 trigger_text = trigger.text
                 trigger_sender = getattr(trigger.sender, "first_name", None) or "собеседник"
@@ -151,13 +187,18 @@ async def _bot_loop(task_id: int) -> None:
                         t.last_action_at = datetime.utcnow()
                     await db.commit()
 
+                last_replied = datetime.utcnow()
                 last_proactive = datetime.utcnow()
                 logger.info("Task %d replied in chat %d", task_id, task.chat_id)
 
             # Proactive: one bot posts something new, triggering a burst
             if (task.proactive_interval and
                     datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval)):
-                topic = await generate_new_topic(task.persona)
+                # 30% chance: grab a real news snippet from subscribed channels
+                news = ""
+                if random.randint(1, 100) <= 30:
+                    news = await _fetch_news_snippet(account.id, account.proxy)
+                topic = await generate_new_topic(task.persona, news_snippet=news)
                 await client.send_message(chat_peer, topic)
                 _last_group_activity = datetime.utcnow()
 
