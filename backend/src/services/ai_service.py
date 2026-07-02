@@ -1,4 +1,5 @@
 import httpx
+import random
 import anthropic
 from src.config import settings
 
@@ -66,16 +67,26 @@ async def generate_bot_reply(
     persona: str,
     trigger_text: str = "",
     trigger_sender: str = "",
+    is_question: bool = False,
 ) -> str:
     """Reply to a specific message in the group chat, building on that thread."""
     history_text = "\n".join(f"{m['sender']}: {m['text']}" for m in conversation[-10:])
 
     if trigger_text:
-        focus = (
-            f"\nТы реагируешь конкретно на это сообщение от {trigger_sender}:\n"
-            f"«{trigger_text}»\n"
-            "Прими его позицию, возрази, добавь своё — но не просто 'согласен' или 'интересно'."
-        )
+        if is_question:
+            focus = (
+                f"\n{trigger_sender} задал(а) вопрос:\n«{trigger_text}»\n"
+                "Дай конкретный живой ответ — своё мнение, совет или опыт. "
+                f"Можешь обратиться к {trigger_sender} по имени в начале."
+            )
+        else:
+            # 40% chance to address by name
+            name_hint = f"Можешь упомянуть имя {trigger_sender} в ответе. " if random.randint(1, 100) <= 40 else ""
+            focus = (
+                f"\nТы реагируешь на сообщение от {trigger_sender}:\n"
+                f"«{trigger_text}»\n"
+                f"{name_hint}Прими его позицию, возрази или добавь своё."
+            )
     else:
         focus = "\nОтветь на последнее сообщение в разговоре."
 

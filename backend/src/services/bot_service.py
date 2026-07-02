@@ -12,13 +12,15 @@ logger = logging.getLogger(__name__)
 _running: dict[int, asyncio.Task] = {}
 
 # Shared: when did last message appear in the group (any bot)
-# Used to detect "active window" and boost reply chance during conversation burst
 _last_group_activity: datetime = datetime.utcnow() - timedelta(hours=12)
-_BURST_WINDOW_MIN = 30  # minutes — how long a burst stays "warm"
+_BURST_WINDOW_MIN = 30
 
 # Global minimum gap between any two bot messages (prevents flooding)
 _last_bot_post: datetime = datetime.utcnow() - timedelta(hours=12)
-_MIN_BOT_INTERVAL_MIN = 8  # minimum minutes between any bot messages
+_MIN_BOT_INTERVAL_MIN = 8
+
+# Track which messages each bot has already reacted to
+_group_reacted: dict[int, set[int]] = {}  # task_id -> set of msg_ids
 
 
 def _resolve_chat_peer(chat_id: int):
@@ -80,8 +82,6 @@ async def _fetch_news_snippet(account_id: int, proxy: str | None) -> str:
         chan = sub.channel_username or sub.channel_title or ""
         if not chan:
             return ""
-        from src.database import async_session_maker as asm
-        from src.models import Account
         async with async_session_maker() as db:
             acc = await db.get(Account, account_id)
         client = await sm.get_client(account_id, acc.session_string, acc.proxy)
@@ -93,24 +93,71 @@ async def _fetch_news_snippet(account_id: int, proxy: str | None) -> str:
     return ""
 
 
+async def _react_to_group_message(client, task_id: int, chat_peer, messages: list) -> None:
+    """Put an emoji reaction on a random recent message from others."""
+    from telethon.tl.functions.messages import SendReactionRequest
+    from telethon.tl.types import ReactionEmoji
+
+    reacted = _group_reacted.setdefault(task_id, set())
+    candidates = [m for m in messages if m.id not in reacted and not m.out and m.text]
+    if not candidates:
+        return
+
+    # 35% chance to react at all
+    if random.randint(1, 100) > 35:
+        return
+
+    msg = random.choice(candidates)
+    text_lower = (msg.text or "").lower()
+
+    # Pick reaction based on message vibe
+    if any(w in text_lower for w in ["ахах", "хах", "смешн", "лол", "умира", "убил", "шедевр", "💀"]):
+        emoji = random.choice(["😂", "🤣", "💀", "😆"])
+    elif any(w in text_lower for w in ["да ладно", "серьёзно", "не верю", "ничего себе", "вау", "ого"]):
+        emoji = random.choice(["😮", "🔥", "👀"])
+    elif any(w in text_lower for w in ["блин", "всё", "опять", "достало", "ужас", "капец"]):
+        emoji = random.choice(["😅", "🤔", "💔"])
+    elif any(w in text_lower for w in ["согласен", "точно", "да", "именно", "правда", "+"]):
+        emoji = random.choice(["👍", "❤", "👏"])
+    else:
+        emoji = random.choice(["👍", "❤", "🔥", "😮", "🎉", "👏", "😂", "🤔"])
+
+    try:
+        await client(SendReactionRequest(
+            peer=chat_peer,
+            msg_id=msg.id,
+            reaction=[ReactionEmoji(emoticon=emoji)],
+        ))
+        reacted.add(msg.id)
+        # Keep set bounded
+        if len(reacted) > 200:
+            oldest = list(reacted)[:100]
+            for mid in oldest:
+                reacted.discard(mid)
+        logger.info("Task %d reacted %s to msg %d in group", task_id, emoji, msg.id)
+    except Exception as e:
+        logger.debug("Task %d: group react failed: %s", task_id, e)
+
+
 async def _bot_loop(task_id: int) -> None:
     global _last_group_activity, _last_bot_post
     from src.services.ai_service import generate_bot_reply, generate_new_topic
 
     last_msg_id: int = 0
-    last_replied: datetime = datetime.utcnow() - timedelta(hours=24)  # per-bot cooldown
-    _REPLY_COOLDOWN_MIN = 40  # don't reply twice within 40 min
+    last_replied: datetime = datetime.utcnow() - timedelta(hours=24)
+    last_reacted: datetime = datetime.utcnow() - timedelta(hours=24)
+    _REPLY_COOLDOWN_MIN = 40
+    _REACT_COOLDOWN_MIN = 15  # react to group messages at most once per 15 min per bot
 
     # Heavy random initial stagger: 0–20 minutes so bots never align
     await asyncio.sleep(random.uniform(0, 1200))
 
-    # Load task to get proactive_interval, then stagger proactive start randomly
+    # Load task to get proactive_interval
     async with async_session_maker() as db:
         _init_task = await db.get(BotTask, task_id)
         _pi = _init_task.proactive_interval if _init_task and _init_task.proactive_interval else 60
 
-    # First proactive post within 10-60 min of startup (spread bots out a bit)
-    # After that, full proactive_interval applies
+    # First proactive post within 10-60 min of startup
     first_post_delay = random.uniform(10, 60)
     last_proactive = datetime.utcnow() - timedelta(minutes=_pi) + timedelta(minutes=first_post_delay)
 
@@ -156,7 +203,15 @@ async def _bot_loop(task_id: int) -> None:
             if new_messages:
                 _last_group_activity = datetime.utcnow()
 
-            # Reply probability: higher during burst window, nearly zero outside
+            # ── React to group messages ───────────────────────────────────
+            since_last_react = (datetime.utcnow() - last_reacted).total_seconds() / 60
+            if new_messages and since_last_react >= _REACT_COOLDOWN_MIN:
+                # Small delay before reacting (5-90 sec, like a human reading)
+                await asyncio.sleep(random.uniform(5, 90))
+                await _react_to_group_message(client, task_id, chat_peer, new_messages)
+                last_reacted = datetime.utcnow()
+
+            # ── Reply to messages ─────────────────────────────────────────
             minutes_since_activity = (datetime.utcnow() - _last_group_activity).total_seconds() / 60
             in_burst = minutes_since_activity < _BURST_WINDOW_MIN
             effective_prob = task.reply_probability if in_burst else max(task.reply_probability // 6, 3)
@@ -166,9 +221,12 @@ async def _bot_loop(task_id: int) -> None:
             can_reply = since_last_reply >= _REPLY_COOLDOWN_MIN and since_last_bot >= _MIN_BOT_INTERVAL_MIN
 
             if new_messages and can_reply and random.randint(1, 100) <= effective_prob:
-                trigger = new_messages[0]
+                # Prefer questions: if any message ends with "?", pick that one
+                questions = [m for m in new_messages if m.text and "?" in m.text]
+                trigger = questions[0] if questions else new_messages[0]
                 trigger_text = trigger.text
                 trigger_sender = getattr(trigger.sender, "first_name", None) or "собеседник"
+                is_question = "?" in trigger_text
 
                 history = []
                 async for msg in client.iter_messages(chat_peer, limit=12):
@@ -179,7 +237,7 @@ async def _bot_loop(task_id: int) -> None:
                         history.append({"sender": sender, "text": msg.text})
                 history = list(reversed(history))
 
-                # Human delay: 1–8 minutes during burst, longer outside
+                # Human delay
                 if in_burst:
                     delay = random.uniform(60, 480)
                 else:
@@ -190,8 +248,12 @@ async def _bot_loop(task_id: int) -> None:
                     history, task.persona,
                     trigger_text=trigger_text,
                     trigger_sender=trigger_sender,
+                    is_question=is_question,
                 )
-                await client.send_message(chat_peer, reply)
+
+                # 70% chance to use Telegram reply-thread (visually shows who replied to whom)
+                reply_to_id = trigger.id if random.randint(1, 100) <= 70 else None
+                await client.send_message(chat_peer, reply, reply_to=reply_to_id)
                 _last_group_activity = datetime.utcnow()
                 _last_bot_post = datetime.utcnow()
 
@@ -204,14 +266,13 @@ async def _bot_loop(task_id: int) -> None:
 
                 last_replied = datetime.utcnow()
                 last_proactive = datetime.utcnow()
-                logger.info("Task %d replied in chat %d", task_id, task.chat_id)
+                logger.info("Task %d replied in chat %d (reply_to=%s)", task_id, task.chat_id, reply_to_id)
 
-            # Proactive: one bot posts something new, triggering a burst
+            # ── Proactive: post something new ────────────────────────────
             since_last_bot_proactive = (datetime.utcnow() - _last_bot_post).total_seconds() / 60
             if (task.proactive_interval and
                     datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval) and
                     since_last_bot_proactive >= _MIN_BOT_INTERVAL_MIN):
-                # 30% chance: grab a real news snippet from subscribed channels
                 news = ""
                 if random.randint(1, 100) <= 30:
                     news = await _fetch_news_snippet(account.id, account.proxy)
