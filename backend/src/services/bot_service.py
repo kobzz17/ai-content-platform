@@ -7,6 +7,7 @@ from sqlalchemy import select
 from src.database import async_session_maker
 from src.models import BotTask, BotLog, TaskStatus, Account
 import src.session_manager as sm
+from src.services import news_fetcher
 
 logger = logging.getLogger(__name__)
 
@@ -111,37 +112,48 @@ async def _fetch_news_snippet(account_id: int, proxy: str | None) -> str:
     return ""
 
 
-async def _forward_channel_post(client, chat_peer, account_id: int) -> bool:
-    """Forward a recent channel post directly to the group. Returns True on success."""
+async def _forward_channel_post(client, chat_peer, account_id: int) -> str | None:
+    """Forward a recent post from any monitored channel to the group.
+    Returns the forwarded post's text on success (used to generate a follow-up comment),
+    or None if nothing could be forwarded.
+    Queries ALL running channel tasks — not filtered by account — so bot accounts
+    that don't own a ChannelTask can still forward content.
+    """
     from src.models import ChannelTask, ChannelSubscription
     from sqlalchemy import select as sa_select
     try:
         async with async_session_maker() as db:
-            r = await db.execute(sa_select(ChannelTask).where(ChannelTask.account_id == account_id))
-            ctask = r.scalars().first()
-            if not ctask:
-                return False
-            r2 = await db.execute(sa_select(ChannelSubscription).where(ChannelSubscription.task_id == ctask.id))
-            subs = r2.scalars().all()
-        if not subs:
-            return False
-        sub = random.choice(subs)
-        chan = sub.channel_username or ""
-        if not chan:
-            return False
-        target_msg = None
-        async for msg in client.iter_messages(chan, limit=10):
-            if msg.text and len(msg.text) > 50:
-                target_msg = msg
-                break
-        if not target_msg:
-            return False
-        await client.forward_messages(chat_peer, [target_msg])
-        logger.info("Account %d forwarded post from %s to group", account_id, chan)
-        return True
+            r = await db.execute(
+                sa_select(ChannelSubscription)
+                .join(ChannelTask, ChannelSubscription.task_id == ChannelTask.id)
+                .where(ChannelTask.status == TaskStatus.running)
+            )
+            subs = r.scalars().all()
+
+        candidates = [s for s in subs if s.channel_username]
+        if not candidates:
+            return None
+
+        random.shuffle(candidates)
+        for sub in candidates[:5]:
+            chan = "@" + sub.channel_username.lstrip("@")
+            try:
+                target_msg = None
+                async for msg in client.iter_messages(chan, limit=15):
+                    if msg.text and len(msg.text) > 50:
+                        target_msg = msg
+                        break
+                if not target_msg:
+                    continue
+                await client.forward_messages(chat_peer, [target_msg])
+                logger.info("Account %d forwarded from %s to group", account_id, chan)
+                return target_msg.text[:250]
+            except Exception as e:
+                logger.debug("Forward from %s failed: %s", chan, e)
+                continue
     except Exception as e:
-        logger.debug("_forward_channel_post failed: %s", e)
-        return False
+        logger.debug("_forward_channel_post error: %s", e)
+    return None
 
 
 async def _react_to_group_message(client, task_id: int, chat_peer, messages: list) -> None:
@@ -257,6 +269,7 @@ async def _bot_loop(task_id: int) -> None:
                     _chat_known_bots.setdefault(task.chat_id, set()).add(my_name)
                     _name_registered = True
                     logger.info("Task %d registered as '%s' in chat %d", task_id, my_name, task.chat_id)
+                    asyncio.create_task(news_fetcher.refresh())
                 except Exception:
                     pass
 
@@ -389,6 +402,8 @@ async def _bot_loop(task_id: int) -> None:
                     datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval) and
                     since_last_bot_proactive >= _MIN_BOT_INTERVAL_MIN):
 
+                from src.services.ai_service import generate_link_share
+
                 active_topic = _group_active_topic.get(task.chat_id)
                 should_continue = bool(
                     active_topic and
@@ -396,21 +411,42 @@ async def _bot_loop(task_id: int) -> None:
                     < _TOPIC_CONTINUE_WINDOW_MIN
                 )
 
-                # Try to forward a channel post (35% chance, only when no active topic)
-                forwarded = False
                 posted_text = ""
-                if not should_continue and random.randint(1, 100) <= 35:
-                    forwarded = await _forward_channel_post(client, chat_peer, account.id)
+                # When active topic: 20% chance to drop a link to enrich discussion
+                # When fresh start:  35% RSS/YouTube link, 30% Telegram forward, 35% text topic
+                roll = random.randint(1, 100)
+                use_rss = roll <= (20 if should_continue else 35)
+                use_fwd = not use_rss and roll <= (20 if should_continue else 65)
 
-                if not forwarded:
-                    my_name = _bot_display_name.get(account.id, "")
-                    known = list(_chat_known_bots.get(task.chat_id, set()) - {my_name})
-                    recent = [m[:60] for m in list(_bot_memory.get(task_id, deque()))[-5:]]
+                if use_rss:
+                    rss = await news_fetcher.random_item()
+                    if rss:
+                        comment = await generate_link_share(rss["title"], rss["source"], task.persona)
+                        msg_text = f"{comment}\n\n{rss['url']}"
+                        await client.send_message(chat_peer, msg_text)
+                        posted_text = msg_text
+                        _bot_memory.setdefault(task_id, deque(maxlen=300)).append(comment)
+                        logger.info("Task %d shared RSS link from %s", task_id, rss["source"])
+                    else:
+                        use_fwd = True  # RSS cache empty, try Telegram forward
+
+                if use_fwd and not posted_text:
+                    fwd_text = await _forward_channel_post(client, chat_peer, account.id)
+                    if fwd_text:
+                        # Short delay then add a comment to spark discussion
+                        await asyncio.sleep(random.uniform(4, 12))
+                        comment = await generate_link_share(fwd_text, "Telegram-канал", task.persona)
+                        await client.send_message(chat_peer, comment)
+                        posted_text = f"[forward] {comment}"
+                        _bot_memory.setdefault(task_id, deque(maxlen=300)).append(comment)
+                        logger.info("Task %d forwarded channel post + comment", task_id)
+
+                if not posted_text:
+                    # Generate a text topic (continue active or start new)
                     current_t = active_topic["text"] if (should_continue and active_topic) else ""
-
-                    # News snippet only when not continuing a topic
+                    recent = [m[:60] for m in list(_bot_memory.get(task_id, deque()))[-5:]]
                     news = ""
-                    if not should_continue and random.randint(1, 100) <= 40:
+                    if not should_continue and random.randint(1, 100) <= 30:
                         news = await _fetch_news_snippet(account.id, account.proxy)
 
                     topic = await generate_new_topic(
@@ -431,23 +467,20 @@ async def _bot_loop(task_id: int) -> None:
                         }
                     elif active_topic:
                         active_topic["last_activity_at"] = datetime.utcnow()
-                else:
-                    posted_text = "[forward]"
-                    _bot_memory.setdefault(task_id, deque(maxlen=300)).append("[переслал пост из канала]")
 
                 _last_group_activity = datetime.utcnow()
                 _last_bot_post = datetime.utcnow()
 
                 async with async_session_maker() as db:
-                    db.add(BotLog(task_id=task_id, action="topic_posted", text=posted_text))
+                    db.add(BotLog(task_id=task_id, action="topic_posted", text=posted_text[:300]))
                     t = await db.get(BotTask, task_id)
                     if t:
                         t.last_action_at = datetime.utcnow()
                     await db.commit()
 
                 last_proactive = datetime.utcnow()
-                logger.info("Task %d posted topic in chat %d (forwarded=%s, continuing=%s)",
-                            task_id, task.chat_id, forwarded, should_continue)
+                logger.info("Task %d posted in chat %d (continuing=%s text=%s…)",
+                            task_id, task.chat_id, should_continue, posted_text[:40])
 
         except asyncio.CancelledError:
             raise

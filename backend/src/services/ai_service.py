@@ -222,6 +222,29 @@ async def generate_new_topic(
     return result
 
 
+async def generate_link_share(content_hint: str, source: str, persona: str) -> str:
+    """Generate a short message to share a link or forwarded post in group chat."""
+    message = await _get_client().messages.create(
+        model=settings.anthropic_model,
+        max_tokens=100,
+        system=f"{persona}\n\n{_CHAT_STYLE}",
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Ты делишься с чатом материалом из источника «{source}».\n"
+                f"О чём: «{content_hint[:200]}»\n\n"
+                "Напиши 1 живое короткое сообщение-подводку — как будто сам(а) наткнулся(ась) "
+                "на это и решил(а) скинуть ребятам. Саму ссылку не вставляй. "
+                "Можно добавить свою реакцию или задать вопрос. 1 предложение."
+            )
+        }],
+    )
+    result = message.content[0].text.strip()
+    if result and result[0].islower():
+        result = result[0].upper() + result[1:]
+    return result
+
+
 async def generate_channel_comment(post_text: str, persona: str) -> str:
     """Generate a natural comment for a Telegram channel post."""
     message = await _get_client().messages.create(
