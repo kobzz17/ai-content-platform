@@ -222,6 +222,21 @@ async def generate_new_topic(
     return result
 
 
+async def generate_youtube_query(persona: str) -> str:
+    """Generate a YouTube search query that fits the bot's persona and interests."""
+    message = await _get_client().messages.create(
+        model=settings.anthropic_model,
+        max_tokens=30,
+        system=(
+            "Ты генерируешь поисковый запрос для YouTube. "
+            "Верни ТОЛЬКО запрос — 2-5 слов на русском, без кавычек и пояснений. "
+            "Запрос должен искать интересное/свежее видео по теме, близкой персоне."
+        ),
+        messages=[{"role": "user", "content": f"Персона: {persona[:300]}\n\nЗапрос:"}],
+    )
+    return message.content[0].text.strip().strip('"').strip("'")
+
+
 async def generate_link_share(content_hint: str, source: str, persona: str) -> str:
     """Generate a short message to share a link or forwarded post in group chat."""
     message = await _get_client().messages.create(

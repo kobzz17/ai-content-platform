@@ -1,4 +1,4 @@
-"""RSS / YouTube feed fetcher with in-memory cache (no API key required)."""
+"""RSS news + YouTube search (via Invidious public API, no key required)."""
 import asyncio
 import logging
 import random
@@ -9,19 +9,22 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# ── Feed list ─────────────────────────────────────────────────────────────────
-# YouTube channel RSS (no key needed):
-#   https://www.youtube.com/feeds/videos.xml?channel_id=<CHANNEL_ID>
-# To find a channel_id: open youtube.com/@ChannelName → view page source → search "channelId"
-
+# ── RSS feeds ─────────────────────────────────────────────────────────────────
 RSS_FEEDS: list[tuple[str, str]] = [
     ("Lenta.ru", "https://lenta.ru/rss/"),
     ("RIA Новости", "https://ria.ru/export/rss2/archive/index.xml"),
     ("РБК", "https://rssexport.rbc.ru/rbcnews/news/30/full.rss"),
     ("ТАСС", "https://tass.ru/rss/v2.xml"),
-    # Add YouTube channels below, for example:
-    # ("YT: Wylsacom", "https://www.youtube.com/feeds/videos.xml?channel_id=UCX3_h_Xn8RhFjmTLY3WLKEA"),
-    # ("YT: Vert Dider", "https://www.youtube.com/feeds/videos.xml?channel_id=UCF4-M9H4jY1Y1Z5m_KYJGBA"),
+]
+
+# ── Invidious instances for YouTube search (no API key needed) ────────────────
+# Bots dynamically search by their persona topics — no fixed channel list required.
+_INVIDIOUS = [
+    "https://inv.nadeko.net",
+    "https://invidious.privacydev.net",
+    "https://yt.drgnz.club",
+    "https://invidious.nerdvpn.de",
+    "https://invidious.fdn.fr",
 ]
 
 # ── Cache ─────────────────────────────────────────────────────────────────────
@@ -91,6 +94,40 @@ async def refresh() -> None:
 
 
 async def random_item() -> dict | None:
-    """Return a random cached item {title, url, source}, refreshing if stale."""
+    """Return a random cached news item {title, url, source}, refreshing if stale."""
     await refresh()
     return random.choice(_cache) if _cache else None
+
+
+async def search_youtube(query: str, limit: int = 8) -> list[dict]:
+    """Search YouTube via public Invidious instances. No API key needed.
+    Returns list of {title, url, source} or empty list on failure.
+    """
+    instances = random.sample(_INVIDIOUS, len(_INVIDIOUS))
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as cl:
+        for instance in instances[:3]:  # try up to 3 before giving up
+            try:
+                r = await cl.get(
+                    f"{instance}/api/v1/search",
+                    params={"q": query, "type": "video", "sort_by": "upload_date"},
+                )
+                if r.status_code != 200:
+                    continue
+                results = []
+                for item in r.json()[:limit]:
+                    vid_id = item.get("videoId", "")
+                    title = (item.get("title") or "").strip()
+                    channel = item.get("author", "")
+                    # Skip very short or clearly auto-generated titles
+                    if vid_id and len(title) > 8:
+                        results.append({
+                            "title": title,
+                            "url": f"https://www.youtube.com/watch?v={vid_id}",
+                            "source": f"YouTube / {channel}" if channel else "YouTube",
+                        })
+                if results:
+                    logger.debug("YouTube search '%s' → %d results via %s", query, len(results), instance)
+                    return results
+            except Exception as e:
+                logger.debug("Invidious %s failed: %s", instance, e)
+    return []

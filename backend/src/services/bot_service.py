@@ -419,16 +419,29 @@ async def _bot_loop(task_id: int) -> None:
                 use_fwd = not use_rss and roll <= (20 if should_continue else 65)
 
                 if use_rss:
-                    rss = await news_fetcher.random_item()
-                    if rss:
-                        comment = await generate_link_share(rss["title"], rss["source"], task.persona)
-                        msg_text = f"{comment}\n\n{rss['url']}"
+                    from src.services.ai_service import generate_youtube_query
+                    item: dict | None = None
+
+                    # 55% chance: search YouTube by persona topics; 45%: RSS news
+                    if random.randint(1, 100) <= 55:
+                        query = await generate_youtube_query(task.persona)
+                        results = await news_fetcher.search_youtube(query)
+                        if results:
+                            item = random.choice(results)
+                            logger.info("Task %d YouTube search '%s' → %s", task_id, query, item["title"][:50])
+
+                    if not item:
+                        item = await news_fetcher.random_item()
+
+                    if item:
+                        comment = await generate_link_share(item["title"], item["source"], task.persona)
+                        msg_text = f"{comment}\n\n{item['url']}"
                         await client.send_message(chat_peer, msg_text)
                         posted_text = msg_text
                         _bot_memory.setdefault(task_id, deque(maxlen=300)).append(comment)
-                        logger.info("Task %d shared RSS link from %s", task_id, rss["source"])
+                        logger.info("Task %d shared link from %s", task_id, item["source"])
                     else:
-                        use_fwd = True  # RSS cache empty, try Telegram forward
+                        use_fwd = True  # nothing found, try Telegram forward
 
                 if use_fwd and not posted_text:
                     fwd_text = await _forward_channel_post(client, chat_peer, account.id)
