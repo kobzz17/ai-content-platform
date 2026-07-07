@@ -95,25 +95,23 @@ async def _boost_campaign(boost_id: int) -> None:
                 acc = await db.get(Account, bt.account_id)
             client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
 
-            # iter_messages with ids= is the most reliable way to fetch
-            # a specific message in any Telegram chat type (group/supergroup)
+            # For basic Telegram groups, fetching by ID requires scanning history.
+            # Use offset_id=message_id+1 limit=1 to land exactly on the message.
             msg = None
-            async for m in client.iter_messages(chat_peer, ids=message_id):
-                msg = m
+            async for m in client.iter_messages(chat_peer, limit=1, offset_id=message_id + 1):
+                if m.id == message_id:
+                    msg = m
                 break
 
             if msg:
-                # .message is Telethon's canonical field for both text-only
-                # and media-with-caption messages
                 text = (getattr(msg, "message", None) or "").strip()
                 logger.info("Boost %d: msg %d fetched, text=%d chars, has_media=%s",
                             boost_id, message_id, len(text), bool(msg.media))
                 if text:
                     post_text = text[:600]
                     break
-                # No text — still proceed with empty post_text (generic topic)
             else:
-                logger.warning("Boost %d: msg %d not found via iter_messages", boost_id, message_id)
+                logger.debug("Boost %d: msg %d not found (acc %d)", boost_id, message_id, bt.account_id)
         except Exception as e:
             logger.debug("Boost %d: failed to fetch message via acc %d: %s", boost_id, bt.account_id, e)
 
