@@ -95,33 +95,25 @@ async def _boost_campaign(boost_id: int) -> None:
                 acc = await db.get(Account, bt.account_id)
             client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
 
-            # Try get_messages with raw chat_id integer first (Telethon resolves from entity cache)
+            # iter_messages with ids= is the most reliable way to fetch
+            # a specific message in any Telegram chat type (group/supergroup)
             msg = None
-            for peer_arg in [chat_id, chat_peer]:
-                try:
-                    result = await client.get_messages(peer_arg, ids=message_id)
-                    if result:
-                        msg = result
-                        break
-                except Exception:
-                    pass
-
-            # Fallback: iterate recent messages to find by id
-            if not msg:
-                async for m in client.iter_messages(chat_peer, limit=50):
-                    if m.id == message_id:
-                        msg = m
-                        break
+            async for m in client.iter_messages(chat_peer, ids=message_id):
+                msg = m
+                break
 
             if msg:
-                # .message is Telethon's canonical field for text/caption
+                # .message is Telethon's canonical field for both text-only
+                # and media-with-caption messages
                 text = (getattr(msg, "message", None) or "").strip()
+                logger.info("Boost %d: msg %d fetched, text=%d chars, has_media=%s",
+                            boost_id, message_id, len(text), bool(msg.media))
                 if text:
                     post_text = text[:600]
-                    logger.info("Boost %d: fetched post text (%d chars)", boost_id, len(post_text))
                     break
-                else:
-                    logger.debug("Boost %d: msg %d has no text (media without caption)", boost_id, message_id)
+                # No text — still proceed with empty post_text (generic topic)
+            else:
+                logger.warning("Boost %d: msg %d not found via iter_messages", boost_id, message_id)
         except Exception as e:
             logger.debug("Boost %d: failed to fetch message via acc %d: %s", boost_id, bt.account_id, e)
 
