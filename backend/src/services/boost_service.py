@@ -1,4 +1,4 @@
-"""Boost service — coordinates all bot accounts to comment on a specific group post."""
+"""Boost service — all bot accounts comment on a Telegram channel post."""
 import asyncio
 import logging
 import random
@@ -13,16 +13,6 @@ logger = logging.getLogger(__name__)
 _running: dict[int, asyncio.Task] = {}
 
 
-def _resolve_chat_peer(chat_id: int):
-    from telethon.tl.types import PeerChat, PeerChannel
-    if chat_id < 0:
-        raw = -chat_id
-        if raw > 1_000_000_000_000:
-            return PeerChannel(raw - 1_000_000_000_000)
-        return PeerChat(raw)
-    return chat_id
-
-
 async def start_boost(boost_id: int) -> None:
     if boost_id in _running:
         return
@@ -30,19 +20,6 @@ async def start_boost(boost_id: int) -> None:
     _running[boost_id] = t
     t.add_done_callback(lambda _: _running.pop(boost_id, None))
     logger.info("Started boost campaign %d", boost_id)
-
-
-async def start_all_running() -> None:
-    """Resume boost campaigns that were running when the server last stopped."""
-    async with async_session_maker() as db:
-        r = await db.execute(
-            select(BoostTask).where(BoostTask.status == BoostStatus.running)
-        )
-        boosts = r.scalars().all()
-    for b in boosts:
-        await start_boost(b.id)
-    if boosts:
-        logger.info("Resumed %d boost campaign(s) from DB", len(boosts))
 
 
 async def stop_boost(boost_id: int) -> None:
@@ -55,6 +32,18 @@ async def stop_boost(boost_id: int) -> None:
             pass
 
 
+async def start_all_running() -> None:
+    async with async_session_maker() as db:
+        r = await db.execute(
+            select(BoostTask).where(BoostTask.status == BoostStatus.running)
+        )
+        boosts = r.scalars().all()
+    for b in boosts:
+        await start_boost(b.id)
+    if boosts:
+        logger.info("Resumed %d boost campaign(s) from DB", len(boosts))
+
+
 async def _boost_campaign(boost_id: int) -> None:
     from src.services.ai_service import analyze_post_for_boost
 
@@ -62,23 +51,28 @@ async def _boost_campaign(boost_id: int) -> None:
         boost = await db.get(BoostTask, boost_id)
         if not boost:
             return
-        chat_id = boost.chat_id
+        channel_peer = boost.channel_peer  # e.g. "@channelname" or "-100123456"
         message_id = boost.message_id
         topic = boost.topic
         duration_min = boost.duration_minutes
 
-    # Get all running BotTasks for this chat
+    # Get all running bot tasks (deduplicated by account)
     async with async_session_maker() as db:
         r = await db.execute(
-            select(BotTask).where(
-                BotTask.status == TaskStatus.running,
-                BotTask.chat_id == chat_id,
-            )
+            select(BotTask).where(BotTask.status == TaskStatus.running)
         )
-        bot_tasks = list(r.scalars().all())
+        all_tasks = r.scalars().all()
+
+    # Deduplicate: one task per account (take the first one found)
+    seen: set[int] = set()
+    bot_tasks: list[BotTask] = []
+    for bt in all_tasks:
+        if bt.account_id not in seen:
+            seen.add(bt.account_id)
+            bot_tasks.append(bt)
 
     if not bot_tasks:
-        logger.warning("Boost %d: no running BotTasks for chat_id=%d", boost_id, chat_id)
+        logger.warning("Boost %d: no running bot tasks found", boost_id)
         async with async_session_maker() as db:
             b = await db.get(BoostTask, boost_id)
             if b:
@@ -86,36 +80,27 @@ async def _boost_campaign(boost_id: int) -> None:
                 await db.commit()
         return
 
-    # Fetch the target message text (supports text-only and media+caption)
-    chat_peer = _resolve_chat_peer(chat_id)
+    # Fetch the channel post text using the first available account
     post_text = ""
-    for bt in bot_tasks:
-        try:
-            async with async_session_maker() as db:
-                acc = await db.get(Account, bt.account_id)
-            client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
+    if channel_peer:
+        for bt in bot_tasks[:3]:
+            try:
+                async with async_session_maker() as db:
+                    acc = await db.get(Account, bt.account_id)
+                client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
+                channel_entity = await client.get_entity(channel_peer)
+                msg = await client.get_messages(channel_entity, ids=message_id)
+                if msg:
+                    text = (getattr(msg, "message", None) or "").strip()
+                    if text:
+                        post_text = text[:600]
+                        logger.info("Boost %d: fetched post text (%d chars) from %s",
+                                    boost_id, len(post_text), channel_peer)
+                        break
+            except Exception as e:
+                logger.debug("Boost %d: fetch failed via acc %d: %s", boost_id, bt.account_id, e)
 
-            # For basic Telegram groups, fetching by ID requires scanning history.
-            # Use offset_id=message_id+1 limit=1 to land exactly on the message.
-            msg = None
-            async for m in client.iter_messages(chat_peer, limit=1, offset_id=message_id + 1):
-                if m.id == message_id:
-                    msg = m
-                break
-
-            if msg:
-                text = (getattr(msg, "message", None) or "").strip()
-                logger.info("Boost %d: msg %d fetched, text=%d chars, has_media=%s",
-                            boost_id, message_id, len(text), bool(msg.media))
-                if text:
-                    post_text = text[:600]
-                    break
-            else:
-                logger.debug("Boost %d: msg %d not found (acc %d)", boost_id, message_id, bt.account_id)
-        except Exception as e:
-            logger.debug("Boost %d: failed to fetch message via acc %d: %s", boost_id, bt.account_id, e)
-
-    # Auto-generate topic if not specified
+    # Auto-generate discussion topic from post content if not provided
     if not topic:
         if post_text:
             try:
@@ -130,26 +115,26 @@ async def _boost_campaign(boost_id: int) -> None:
                 logger.warning("Boost %d: topic analysis failed: %s", boost_id, e)
         topic = topic or "обсуждение поста"
 
-    # Update total_accounts count
+    # Update total_accounts
     async with async_session_maker() as db:
         b = await db.get(BoostTask, boost_id)
         if b:
             b.total_accounts = len(bot_tasks)
             await db.commit()
 
-    # Stagger comments evenly across duration
+    # Schedule comments evenly across duration with random jitter
     random.shuffle(bot_tasks)
     n = len(bot_tasks)
     slot_min = duration_min / n if n > 0 else duration_min
-    posted_comments: list[str] = []  # shared; readable by later slots for variety
+    posted_comments: list[str] = []
 
     sub_tasks = []
     for i, bt in enumerate(bot_tasks):
         jitter = random.uniform(-min(2.0, slot_min / 4), min(2.0, slot_min / 4))
-        delay_sec = max(10.0, (i * slot_min + jitter) * 60)
+        delay_sec = max(15.0, (i * slot_min + jitter) * 60)
         sub_tasks.append(asyncio.create_task(
-            _post_comment(delay_sec, boost_id, chat_id, message_id, bt.account_id, bt.persona,
-                          post_text, topic, posted_comments)
+            _post_comment(delay_sec, boost_id, channel_peer, message_id,
+                          bt.account_id, bt.persona, post_text, topic, posted_comments)
         ))
 
     await asyncio.gather(*sub_tasks, return_exceptions=True)
@@ -160,13 +145,13 @@ async def _boost_campaign(boost_id: int) -> None:
             b.status = BoostStatus.done
             await db.commit()
 
-    logger.info("Boost %d done — %d accounts, %d comments posted", boost_id, n, len(posted_comments))
+    logger.info("Boost %d done — %d accounts, %d comments", boost_id, n, len(posted_comments))
 
 
 async def _post_comment(
     delay_sec: float,
     boost_id: int,
-    chat_id: int,
+    channel_peer: str | None,
     message_id: int,
     account_id: int,
     persona: str,
@@ -178,7 +163,6 @@ async def _post_comment(
 
     await asyncio.sleep(delay_sec)
 
-    # Bail out if campaign was cancelled while we were sleeping
     async with async_session_maker() as db:
         b = await db.get(BoostTask, boost_id)
         if not b or b.status != BoostStatus.running:
@@ -191,20 +175,30 @@ async def _post_comment(
 
     try:
         client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
-        chat_peer = _resolve_chat_peer(chat_id)
-
         comment = await generate_boost_comment(post_text, topic, persona, list(posted_comments))
-        await client.send_message(chat_peer, comment, reply_to=message_id)
+
+        if channel_peer:
+            # Comment on a channel post (posts in linked discussion group)
+            channel_entity = await client.get_entity(channel_peer)
+            await client.send_message(channel_entity, comment, comment_to=message_id)
+        else:
+            # Legacy: reply in bot group
+            from telethon.tl.types import PeerChat, PeerChannel
+            raw = -int(str(boost_id))  # placeholder — shouldn't be reached for new boosts
+            await client.send_message(message_id, comment)
+
         posted_comments.append(comment)
 
         async with async_session_maker() as db:
-            db.add(BoostLog(boost_id=boost_id, account_id=account_id, action="commented", text=comment))
+            db.add(BoostLog(boost_id=boost_id, account_id=account_id,
+                            action="commented", text=comment))
             b = await db.get(BoostTask, boost_id)
             if b:
                 b.comments_posted += 1
             await db.commit()
 
-        logger.info("Boost %d: acc %d commented on msg %d", boost_id, account_id, message_id)
+        logger.info("Boost %d: acc %d commented on %s msg %d",
+                    boost_id, account_id, channel_peer, message_id)
 
     except asyncio.CancelledError:
         raise
@@ -212,7 +206,8 @@ async def _post_comment(
         logger.error("Boost %d: acc %d failed: %s", boost_id, account_id, e)
         try:
             async with async_session_maker() as db:
-                db.add(BoostLog(boost_id=boost_id, account_id=account_id, action="error", text=str(e)[:300]))
+                db.add(BoostLog(boost_id=boost_id, account_id=account_id,
+                                action="error", text=str(e)[:300]))
                 await db.commit()
         except Exception:
             pass

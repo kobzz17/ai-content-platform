@@ -30,6 +30,7 @@ async def init_db():
             "ALTER TABLE accounts ADD COLUMN total_actions INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE accounts ADD COLUMN restrictions_count INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE accounts ADD COLUMN bans_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE boost_tasks ADD COLUMN channel_peer TEXT",
         ]
         for stmt in migrations:
             try:

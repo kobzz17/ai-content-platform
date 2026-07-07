@@ -213,12 +213,13 @@ class BoostStatus(str, enum.Enum):
 
 
 class BoostTask(Base):
-    """Campaign that makes all bot accounts comment on a specific group message."""
+    """Campaign that makes all bot accounts comment on a channel post."""
     __tablename__ = "boost_tasks"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     message_link: Mapped[str] = mapped_column(String(500))
-    chat_id: Mapped[int] = mapped_column(BigInteger)
+    channel_peer: Mapped[str | None] = mapped_column(String(255), nullable=True)  # @username or -100ID
+    chat_id: Mapped[int] = mapped_column(BigInteger, default=0)  # kept for legacy
     message_id: Mapped[int] = mapped_column(Integer)
     topic: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[BoostStatus] = mapped_column(SAEnum(BoostStatus), default=BoostStatus.running)

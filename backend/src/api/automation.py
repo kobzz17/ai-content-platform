@@ -230,57 +230,49 @@ def _boost_out(b: BoostTask) -> BoostOut:
     )
 
 
-def _extract_message_id(link_or_id: str) -> tuple[int | None, int]:
-    """Return (raw_channel_id_or_None, message_id) from a t.me link or plain ID."""
-    s = link_or_id.strip()
+def _parse_boost_link(link: str) -> tuple[str | None, int]:
+    """Return (channel_peer, message_id) from a Telegram post link.
+
+    channel_peer formats returned:
+      '@username'       — public channel/group
+      '-100CHANNEL_ID'  — private channel/supergroup (t.me/c/ID/MSG)
+      None              — plain integer ID entered (legacy group boost)
+    """
+    s = link.strip()
     if re.match(r'^\d+$', s):
         return None, int(s)
+    # Private channel: https://t.me/c/CHANNEL_ID/MSG_ID
     m = re.match(r'https?://t\.me/c/(\d+)/(\d+)', s)
     if m:
-        return int(m.group(1)), int(m.group(2))
-    # Public username link: https://t.me/username/123
-    m2 = re.search(r'/(\d+)$', s)
+        return f"-100{m.group(1)}", int(m.group(2))
+    # Public channel/group: https://t.me/username/MSG_ID
+    m2 = re.match(r'https?://t\.me/([^/?]+)/(\d+)', s)
     if m2:
-        return None, int(m2.group(1))
-    raise ValueError("Введи ссылку на сообщение (t.me/c/...) или его ID (число)")
+        username = m2.group(1)
+        if username not in ("c", "joinchat"):
+            return f"@{username}", int(m2.group(2))
+    raise ValueError("Введи ссылку на пост канала (t.me/channel/N) или ID сообщения")
 
 
 @router.post("/boost", response_model=BoostOut, status_code=201)
 async def create_boost(data: CreateBoostRequest, session: AsyncSession = Depends(get_session)):
     try:
-        raw_channel_id, message_id = _extract_message_id(data.message_link)
+        channel_peer, message_id = _parse_boost_link(data.message_link)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Find the matching chat_id from running BotTasks
-    chat_id: int | None = None
-    if raw_channel_id is not None:
-        # Try both storage formats: -RAW and -(1e12+RAW)
-        candidates = [-raw_channel_id, -(1_000_000_000_000 + raw_channel_id)]
-        r = await session.execute(
-            select(BotTask).where(
-                BotTask.status == TaskStatus.running,
-                BotTask.chat_id.in_(candidates),
-            ).limit(1)
-        )
-        bt = r.scalars().first()
-        if bt:
-            chat_id = bt.chat_id
-
-    if chat_id is None:
-        # Fall back to the first running BotTask's chat
-        r = await session.execute(
-            select(BotTask).where(BotTask.status == TaskStatus.running).limit(1)
-        )
-        bt = r.scalars().first()
-        if not bt:
-            raise HTTPException(status_code=400, detail="Нет активных задач бота. Сначала запусти автоматизацию.")
-        chat_id = bt.chat_id
+    # Verify there are active bot accounts to use
+    r = await session.execute(
+        select(BotTask).where(BotTask.status == TaskStatus.running).limit(1)
+    )
+    if not r.scalars().first():
+        raise HTTPException(status_code=400, detail="Нет активных задач бота. Сначала запусти автоматизацию.")
 
     ends_at = datetime.utcnow() + timedelta(minutes=data.duration_minutes)
     boost = BoostTask(
         message_link=data.message_link,
-        chat_id=chat_id,
+        channel_peer=channel_peer,
+        chat_id=0,
         message_id=message_id,
         topic=data.topic or None,
         status=BoostStatus.running,
