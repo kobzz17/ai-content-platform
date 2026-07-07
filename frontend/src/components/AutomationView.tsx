@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, Account, BotTask, BotLog, Dialog, CreateTaskPayload, ChannelTask, ChannelLog, CreateChannelTaskPayload, SessionMode } from "../api/client";
+import { api, Account, BotTask, BotLog, Dialog, CreateTaskPayload, ChannelTask, ChannelLog, CreateChannelTaskPayload, SessionMode, BoostTask, BoostLog } from "../api/client";
 
 const SESSION_MODE_LABELS: Record<SessionMode, string> = {
   always: "Всегда активен",
@@ -24,7 +24,7 @@ const STATUS_BADGE: Record<string, { label: string; color: string }> = {
   stopped: { label: "Остановлен", color: "#6b7280" },
 };
 
-type MainTab = "chats" | "channels";
+type MainTab = "chats" | "channels" | "boost";
 
 const CH_ACTION_LABELS: Record<string, string> = {
   subscribed: "Подписался",
@@ -39,8 +39,10 @@ export function AutomationView({ accounts }: Props) {
   const [logs, setLogs] = useState<BotLog[]>([]);
   const [channelTasks, setChannelTasks] = useState<ChannelTask[]>([]);
   const [channelLogs, setChannelLogs] = useState<ChannelLog[]>([]);
+  const [boosts, setBoosts] = useState<BoostTask[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [showChannelModal, setShowChannelModal] = useState(false);
+  const [showBoostModal, setShowBoostModal] = useState(false);
   const logsEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -48,11 +50,13 @@ export function AutomationView({ accounts }: Props) {
     loadLogs();
     loadChannelTasks();
     loadChannelLogs();
+    loadBoosts();
     const interval = setInterval(() => {
       loadTasks();
       loadLogs();
       loadChannelTasks();
       loadChannelLogs();
+      loadBoosts();
     }, 5000);
     return () => clearInterval(interval);
   }, []);
@@ -77,6 +81,10 @@ export function AutomationView({ accounts }: Props) {
 
   async function loadChannelLogs() {
     try { setChannelLogs(await api.getChannelLogs()); } catch {}
+  }
+
+  async function loadBoosts() {
+    try { setBoosts(await api.listBoosts()); } catch {}
   }
 
   async function handleStatus(task: BotTask, status: "running" | "paused" | "stopped") {
@@ -118,12 +126,12 @@ export function AutomationView({ accounts }: Props) {
           <div style={s.mainTabs}>
             <button style={{...s.mainTab, ...(mainTab === "chats" ? s.mainTabActive : {})}} onClick={() => setMainTab("chats")}>💬 Чаты</button>
             <button style={{...s.mainTab, ...(mainTab === "channels" ? s.mainTabActive : {})}} onClick={() => setMainTab("channels")}>📡 Каналы</button>
+            <button style={{...s.mainTab, ...(mainTab === "boost" ? s.mainTabActive : {})}} onClick={() => setMainTab("boost")}>🚀 Буст поста</button>
           </div>
         </div>
-        {mainTab === "chats"
-          ? <button style={s.addBtn} onClick={() => setShowModal(true)}>+ Добавить задачу</button>
-          : <button style={s.addBtn} onClick={() => setShowChannelModal(true)}>+ Мониторинг канала</button>
-        }
+        {mainTab === "chats" && <button style={s.addBtn} onClick={() => setShowModal(true)}>+ Добавить задачу</button>}
+        {mainTab === "channels" && <button style={s.addBtn} onClick={() => setShowChannelModal(true)}>+ Мониторинг канала</button>}
+        {mainTab === "boost" && <button style={{...s.addBtn, background: "#7c3aed"}} onClick={() => setShowBoostModal(true)}>🚀 Запустить буст</button>}
       </div>
 
       <div style={s.body}>
@@ -264,6 +272,15 @@ export function AutomationView({ accounts }: Props) {
           </div>
         </div>
         </>}
+
+        {mainTab === "boost" && (
+          <BoostPanel
+            boosts={boosts}
+            onCancel={async (id) => {
+              try { await api.cancelBoost(id); loadBoosts(); } catch {}
+            }}
+          />
+        )}
       </div>
 
       {showModal && (
@@ -279,6 +296,13 @@ export function AutomationView({ accounts }: Props) {
           accounts={accounts}
           onCreated={(ct) => { setChannelTasks(prev => [ct, ...prev]); setShowChannelModal(false); }}
           onClose={() => setShowChannelModal(false)}
+        />
+      )}
+
+      {showBoostModal && (
+        <BoostModal
+          onCreated={(b) => { setBoosts(prev => [b, ...prev]); setShowBoostModal(false); }}
+          onClose={() => setShowBoostModal(false)}
         />
       )}
     </div>
@@ -475,6 +499,182 @@ function StepDot({ n, label, active, done }: { n: number; label: string; active:
         {done ? "✓" : n}
       </div>
       <span style={{ fontSize: 10, color: active ? "#fff" : "#666" }}>{label}</span>
+    </div>
+  );
+}
+
+// ── Boost Panel ───────────────────────────────────────────────────────────────
+
+const BOOST_STATUS_LABEL: Record<string, { label: string; color: string }> = {
+  running: { label: "В процессе", color: "#a78bfa" },
+  done:    { label: "Завершён",   color: "#22c55e" },
+  cancelled: { label: "Отменён", color: "#6b7280" },
+};
+
+function BoostPanel({ boosts, onCancel }: { boosts: BoostTask[]; onCancel: (id: number) => void }) {
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [logs, setLogs] = useState<Record<number, BoostLog[]>>({});
+
+  async function loadLogs(id: number) {
+    try {
+      const l = await api.getBoostLogs(id);
+      setLogs(prev => ({ ...prev, [id]: l }));
+    } catch {}
+  }
+
+  function toggleExpand(id: number) {
+    if (expandedId === id) {
+      setExpandedId(null);
+    } else {
+      setExpandedId(id);
+      loadLogs(id);
+    }
+  }
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+      {boosts.length === 0 && (
+        <div style={s.empty}>Нажми «Запустить буст» чтобы разогнать обсуждение конкретного поста</div>
+      )}
+      {boosts.map(b => {
+        const badge = BOOST_STATUS_LABEL[b.status] || BOOST_STATUS_LABEL.done;
+        const progress = b.total_accounts > 0 ? Math.round((b.comments_posted / b.total_accounts) * 100) : 0;
+        const created = new Date(b.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+        const ends = new Date(b.ends_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+        const isExpanded = expandedId === b.id;
+
+        return (
+          <div key={b.id} style={{ background: "#1a1a1a", borderRadius: 12, padding: 16, border: "1px solid #2a2a2a" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ color: "#fff", fontWeight: 700, fontSize: 15 }}>Буст #{b.id}</span>
+              <span style={{ fontSize: 11, fontWeight: 600, border: "1px solid", borderRadius: 20, padding: "2px 10px", color: badge.color, borderColor: badge.color }}>{badge.label}</span>
+            </div>
+            <div style={{ color: "#aaa", fontSize: 12, marginBottom: 4, wordBreak: "break-all" }}>
+              Сообщение: <span style={{ color: "#60a5fa" }}>{b.message_link}</span>
+            </div>
+            {b.topic && (
+              <div style={{ color: "#aaa", fontSize: 12, marginBottom: 4 }}>
+                Тема: <span style={{ color: "#e2e8f0" }}>{b.topic}</span>
+              </div>
+            )}
+            <div style={{ color: "#555", fontSize: 11, marginBottom: 10 }}>
+              {created} → {ends} · {b.duration_minutes} мин
+            </div>
+
+            {/* Progress bar */}
+            <div style={{ background: "#222", borderRadius: 4, height: 6, marginBottom: 6 }}>
+              <div style={{ background: b.status === "done" ? "#22c55e" : "#a78bfa", borderRadius: 4, height: 6, width: `${progress}%`, transition: "width 0.5s" }} />
+            </div>
+            <div style={{ color: "#888", fontSize: 11, marginBottom: 10 }}>
+              {b.comments_posted} из {b.total_accounts} аккаунтов прокомментировали
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button style={{ background: "#1a1a2e", color: "#a78bfa", border: "1px solid #4c1d95", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 12 }}
+                onClick={() => toggleExpand(b.id)}>
+                {isExpanded ? "Скрыть" : "Лог"}
+              </button>
+              {b.status === "running" && (
+                <button style={s.btnStop} onClick={() => onCancel(b.id)}>⛔ Отменить</button>
+              )}
+            </div>
+
+            {isExpanded && (
+              <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 4 }}>
+                {(logs[b.id] || []).length === 0 && <div style={{ color: "#555", fontSize: 12 }}>Логов пока нет</div>}
+                {(logs[b.id] || []).map(log => (
+                  <div key={log.id} style={{ fontSize: 12, display: "flex", gap: 8, alignItems: "baseline" }}>
+                    <span style={{ color: "#555" }}>{new Date(log.created_at).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}</span>
+                    <span style={{ color: "#888" }}>{log.account_label || `#${log.account_id}`}</span>
+                    <span style={{ color: log.action === "error" ? "#ef4444" : "#22c55e", fontWeight: 600 }}>{log.action === "commented" ? "✓" : "✗"}</span>
+                    {log.text && <span style={{ color: "#ccc", fontStyle: "italic" }}>"{log.text}"</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Boost Modal ───────────────────────────────────────────────────────────────
+
+function BoostModal({ onCreated, onClose }: { onCreated: (b: BoostTask) => void; onClose: () => void }) {
+  const [messageLink, setMessageLink] = useState("");
+  const [topic, setTopic] = useState("");
+  const [duration, setDuration] = useState(60);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit() {
+    if (!messageLink.trim()) return;
+    setSubmitting(true);
+    setError("");
+    try {
+      const boost = await api.createBoost({
+        message_link: messageLink.trim(),
+        topic: topic.trim() || undefined,
+        duration_minutes: duration,
+      });
+      onCreated(boost);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div style={s.overlay}>
+      <div style={s.modal}>
+        <span style={s.modalTitle}>🚀 Буст поста</span>
+        <div style={{ color: "#aaa", fontSize: 13 }}>
+          Все боты в течение указанного времени оставят комментарии под выбранным сообщением, имитируя живое обсуждение.
+        </div>
+
+        <label style={s.label}>Ссылка на сообщение или его ID</label>
+        <input
+          style={s.input}
+          value={messageLink}
+          onChange={e => setMessageLink(e.target.value)}
+          placeholder="https://t.me/c/123456/42  или  42"
+        />
+        <div style={{ color: "#555", fontSize: 11 }}>
+          В Telegram: правая кнопка на сообщении → Копировать ссылку. Или введи только ID сообщения.
+        </div>
+
+        <label style={s.label}>Тема обсуждения (необязательно)</label>
+        <textarea
+          style={s.textarea}
+          value={topic}
+          onChange={e => setTopic(e.target.value)}
+          rows={2}
+          placeholder="Оставь пустым — боты сами проанализируют пост и придумают тему"
+        />
+
+        <label style={s.label}>Длительность: <b style={{ color: "#a78bfa" }}>{duration} мин</b></label>
+        <input
+          type="range" min={15} max={180} step={5} value={duration}
+          onChange={e => setDuration(+e.target.value)}
+          style={{ ...s.range, accentColor: "#7c3aed" }}
+        />
+        <div style={{ color: "#555", fontSize: 11 }}>
+          Комментарии будут равномерно распределены по всему времени
+        </div>
+
+        {error && <div style={s.error}>{error}</div>}
+
+        <button
+          style={{ ...s.submitBtn, background: "#7c3aed", opacity: messageLink.trim() ? 1 : 0.4 }}
+          disabled={!messageLink.trim() || submitting}
+          onClick={handleSubmit}
+        >
+          {submitting ? "Запускаем..." : "🚀 Запустить буст"}
+        </button>
+        <button style={s.cancelBtn} onClick={onClose}>Отмена</button>
+      </div>
     </div>
   );
 }

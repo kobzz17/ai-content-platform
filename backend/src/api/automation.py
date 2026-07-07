@@ -1,10 +1,12 @@
+import re
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from pydantic import BaseModel
 from src.database import get_session
-from src.models import BotTask, BotLog, TaskStatus, Account
-from src.services import bot_service
+from src.models import BotTask, BotLog, TaskStatus, Account, BoostTask, BoostLog, BoostStatus
+from src.services import bot_service, boost_service
 import src.session_manager as sm
 
 router = APIRouter(prefix="/automation", tags=["automation"])
@@ -178,6 +180,158 @@ async def get_all_logs(limit: int = 100, session: AsyncSession = Depends(get_ses
         select(BotLog).order_by(desc(BotLog.created_at)).limit(limit)
     )
     return [_log_out(log) for log in result.scalars().all()]
+
+
+# ── Boost endpoints ───────────────────────────────────────────────────────────
+
+class CreateBoostRequest(BaseModel):
+    message_link: str   # t.me/c/CHATID/MSGID URL or plain message ID number
+    topic: str | None = None
+    duration_minutes: int = 60
+
+
+class BoostOut(BaseModel):
+    id: int
+    message_link: str
+    chat_id: int
+    message_id: int
+    topic: str | None
+    status: str
+    duration_minutes: int
+    total_accounts: int
+    comments_posted: int
+    created_at: str
+    ends_at: str
+
+
+class BoostLogOut(BaseModel):
+    id: int
+    boost_id: int
+    account_id: int
+    account_label: str | None
+    action: str
+    text: str | None
+    created_at: str
+
+
+def _boost_out(b: BoostTask) -> BoostOut:
+    return BoostOut(
+        id=b.id,
+        message_link=b.message_link,
+        chat_id=b.chat_id,
+        message_id=b.message_id,
+        topic=b.topic,
+        status=b.status,
+        duration_minutes=b.duration_minutes,
+        total_accounts=b.total_accounts,
+        comments_posted=b.comments_posted,
+        created_at=b.created_at.isoformat(),
+        ends_at=b.ends_at.isoformat(),
+    )
+
+
+def _extract_message_id(link_or_id: str) -> tuple[int | None, int]:
+    """Return (raw_channel_id_or_None, message_id) from a t.me link or plain ID."""
+    s = link_or_id.strip()
+    if re.match(r'^\d+$', s):
+        return None, int(s)
+    m = re.match(r'https?://t\.me/c/(\d+)/(\d+)', s)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    # Public username link: https://t.me/username/123
+    m2 = re.search(r'/(\d+)$', s)
+    if m2:
+        return None, int(m2.group(1))
+    raise ValueError("Введи ссылку на сообщение (t.me/c/...) или его ID (число)")
+
+
+@router.post("/boost", response_model=BoostOut, status_code=201)
+async def create_boost(data: CreateBoostRequest, session: AsyncSession = Depends(get_session)):
+    try:
+        raw_channel_id, message_id = _extract_message_id(data.message_link)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Find the matching chat_id from running BotTasks
+    chat_id: int | None = None
+    if raw_channel_id is not None:
+        # Try both storage formats: -RAW and -(1e12+RAW)
+        candidates = [-raw_channel_id, -(1_000_000_000_000 + raw_channel_id)]
+        r = await session.execute(
+            select(BotTask).where(
+                BotTask.status == TaskStatus.running,
+                BotTask.chat_id.in_(candidates),
+            ).limit(1)
+        )
+        bt = r.scalars().first()
+        if bt:
+            chat_id = bt.chat_id
+
+    if chat_id is None:
+        # Fall back to the first running BotTask's chat
+        r = await session.execute(
+            select(BotTask).where(BotTask.status == TaskStatus.running).limit(1)
+        )
+        bt = r.scalars().first()
+        if not bt:
+            raise HTTPException(status_code=400, detail="Нет активных задач бота. Сначала запусти автоматизацию.")
+        chat_id = bt.chat_id
+
+    ends_at = datetime.utcnow() + timedelta(minutes=data.duration_minutes)
+    boost = BoostTask(
+        message_link=data.message_link,
+        chat_id=chat_id,
+        message_id=message_id,
+        topic=data.topic or None,
+        status=BoostStatus.running,
+        duration_minutes=data.duration_minutes,
+        ends_at=ends_at,
+    )
+    session.add(boost)
+    await session.commit()
+    await session.refresh(boost)
+
+    await boost_service.start_boost(boost.id)
+    return _boost_out(boost)
+
+
+@router.get("/boosts", response_model=list[BoostOut])
+async def list_boosts(session: AsyncSession = Depends(get_session)):
+    r = await session.execute(
+        select(BoostTask).order_by(desc(BoostTask.created_at)).limit(20)
+    )
+    return [_boost_out(b) for b in r.scalars().all()]
+
+
+@router.delete("/boosts/{boost_id}", status_code=204)
+async def cancel_boost(boost_id: int, session: AsyncSession = Depends(get_session)):
+    boost = await session.get(BoostTask, boost_id)
+    if not boost:
+        raise HTTPException(status_code=404)
+    await boost_service.stop_boost(boost_id)
+    boost.status = BoostStatus.cancelled
+    await session.commit()
+
+
+@router.get("/boosts/{boost_id}/logs", response_model=list[BoostLogOut])
+async def get_boost_logs(boost_id: int, session: AsyncSession = Depends(get_session)):
+    r = await session.execute(
+        select(BoostLog).where(BoostLog.boost_id == boost_id).order_by(BoostLog.created_at)
+    )
+    logs = r.scalars().all()
+    out = []
+    for log in logs:
+        acc = await session.get(Account, log.account_id)
+        out.append(BoostLogOut(
+            id=log.id,
+            boost_id=log.boost_id,
+            account_id=log.account_id,
+            account_label=acc.label if acc else None,
+            action=log.action,
+            text=log.text,
+            created_at=log.created_at.isoformat(),
+        ))
+    return out
 
 
 @router.get("/resolve-chat")

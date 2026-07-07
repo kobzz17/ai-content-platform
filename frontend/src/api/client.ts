@@ -151,6 +151,14 @@ export const api = {
   deleteProxy: (proxyId: number) =>
     req(`/proxies/${proxyId}`, { method: "DELETE" }),
 
+  // Boost
+  createBoost: (data: CreateBoostPayload) =>
+    req<BoostTask>("/automation/boost", { method: "POST", body: JSON.stringify(data) }),
+  listBoosts: () => req<BoostTask[]>("/automation/boosts"),
+  cancelBoost: (id: number) =>
+    req(`/automation/boosts/${id}`, { method: "DELETE" }),
+  getBoostLogs: (id: number) => req<BoostLog[]>(`/automation/boosts/${id}/logs`),
+
   // AI
   suggest: (conversation: ConversationMessage[], hint?: string, tone?: string) =>
     req<{ suggestions: string[] }>("/ai/suggest", {
@@ -355,4 +363,34 @@ export interface AddProxyPayload {
   port: number;
   username?: string;
   password?: string;
+}
+
+export interface BoostTask {
+  id: number;
+  message_link: string;
+  chat_id: number;
+  message_id: number;
+  topic: string | null;
+  status: "running" | "done" | "cancelled";
+  duration_minutes: number;
+  total_accounts: number;
+  comments_posted: number;
+  created_at: string;
+  ends_at: string;
+}
+
+export interface BoostLog {
+  id: number;
+  boost_id: number;
+  account_id: number;
+  account_label: string | null;
+  action: string;
+  text: string | null;
+  created_at: string;
+}
+
+export interface CreateBoostPayload {
+  message_link: string;
+  topic?: string;
+  duration_minutes?: number;
 }

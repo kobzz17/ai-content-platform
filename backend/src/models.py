@@ -204,3 +204,37 @@ class ChannelLog(Base):
     action: Mapped[str] = mapped_column(String(50))   # subscribed/commented/reacted/error
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BoostStatus(str, enum.Enum):
+    running = "running"
+    done = "done"
+    cancelled = "cancelled"
+
+
+class BoostTask(Base):
+    """Campaign that makes all bot accounts comment on a specific group message."""
+    __tablename__ = "boost_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    message_link: Mapped[str] = mapped_column(String(500))
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    message_id: Mapped[int] = mapped_column(Integer)
+    topic: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[BoostStatus] = mapped_column(SAEnum(BoostStatus), default=BoostStatus.running)
+    duration_minutes: Mapped[int] = mapped_column(Integer, default=60)
+    total_accounts: Mapped[int] = mapped_column(Integer, default=0)
+    comments_posted: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    ends_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class BoostLog(Base):
+    __tablename__ = "boost_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    boost_id: Mapped[int] = mapped_column(ForeignKey("boost_tasks.id"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    action: Mapped[str] = mapped_column(String(50))  # commented/error
+    text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

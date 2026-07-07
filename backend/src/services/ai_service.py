@@ -309,6 +309,54 @@ async def generate_news_share(news_text: str, channel: str, persona: str) -> str
     return message.content[0].text.strip()
 
 
+async def analyze_post_for_boost(post_text: str) -> str:
+    """Analyze a Telegram post and extract the main discussion topic/angle."""
+    message = await _get_client().messages.create(
+        model=settings.anthropic_model,
+        max_tokens=80,
+        system=(
+            "Ты анализируешь пост в Telegram-группе. Определи главную тему и предложи угол для обсуждения. "
+            "Верни ОДНО короткое предложение по-русски — о чём пост и что интересно обсудить. "
+            "Без кавычек и объяснений."
+        ),
+        messages=[{"role": "user", "content": f"Пост:\n{post_text[:600]}\n\nТема:"}],
+    )
+    return message.content[0].text.strip()
+
+
+async def generate_boost_comment(
+    post_text: str,
+    topic: str,
+    persona: str,
+    existing_comments: list[str] | None = None,
+) -> str:
+    """Generate a contextual comment for boosting a Telegram post."""
+    existing = ""
+    if existing_comments:
+        joined = " / ".join(existing_comments[-3:])
+        existing = f"\nДругие уже написали: «{joined}». Не повторяй их мысли дословно."
+
+    message = await _get_client().messages.create(
+        model=settings.anthropic_model,
+        max_tokens=120,
+        system=f"{persona}\n\n{_CHAT_STYLE}",
+        messages=[{
+            "role": "user",
+            "content": (
+                f"В группе появился пост:\n«{post_text[:400]}»\n\n"
+                f"Тема обсуждения: {topic}\n"
+                f"{existing}\n"
+                "Напиши живой комментарий — мнение, вопрос, схожий опыт или несогласие. "
+                "1-2 предложения, разговорный стиль."
+            )
+        }],
+    )
+    result = message.content[0].text.strip()
+    if result and result[0].islower():
+        result = result[0].upper() + result[1:]
+    return result
+
+
 async def improve_text(text: str, instruction: str) -> str:
     """Rewrite a draft message according to an instruction (shorter, more formal, etc.)."""
     message = await _get_client().messages.create(
