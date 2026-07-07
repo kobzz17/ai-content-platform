@@ -336,6 +336,11 @@ async def generate_boost_comment(
         joined = " / ".join(existing_comments[-3:])
         existing = f"\nДругие уже написали: «{joined}». Не повторяй их мысли дословно."
 
+    if post_text.strip():
+        post_ctx = f"В группе появился пост:\n«{post_text[:400]}»\n\n"
+    else:
+        post_ctx = "В группе обсуждают интересную тему.\n\n"
+
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
         max_tokens=120,
@@ -343,7 +348,7 @@ async def generate_boost_comment(
         messages=[{
             "role": "user",
             "content": (
-                f"В группе появился пост:\n«{post_text[:400]}»\n\n"
+                f"{post_ctx}"
                 f"Тема обсуждения: {topic}\n"
                 f"{existing}\n"
                 "Напиши живой комментарий — мнение, вопрос, схожий опыт или несогласие. "

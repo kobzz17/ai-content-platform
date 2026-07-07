@@ -82,9 +82,15 @@ async def _boost_campaign(boost_id: int) -> None:
                 acc = await db.get(Account, bt.account_id)
             client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
             msg = await client.get_messages(chat_peer, ids=message_id)
-            if msg and (msg.text or getattr(msg, "caption", None)):
-                post_text = (msg.text or msg.caption or "")[:600]
-                break
+            if msg:
+                # Telethon: text is in .message (same as .text); media caption also in .message
+                text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
+                if text.strip():
+                    post_text = text.strip()[:600]
+                    logger.info("Boost %d: fetched post text (%d chars)", boost_id, len(post_text))
+                    break
+                else:
+                    logger.debug("Boost %d: msg %d has no text (media without caption?)", boost_id, message_id)
         except Exception as e:
             logger.debug("Boost %d: failed to fetch message via acc %d: %s", boost_id, bt.account_id, e)
 
