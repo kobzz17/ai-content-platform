@@ -32,6 +32,19 @@ async def start_boost(boost_id: int) -> None:
     logger.info("Started boost campaign %d", boost_id)
 
 
+async def start_all_running() -> None:
+    """Resume boost campaigns that were running when the server last stopped."""
+    async with async_session_maker() as db:
+        r = await db.execute(
+            select(BoostTask).where(BoostTask.status == BoostStatus.running)
+        )
+        boosts = r.scalars().all()
+    for b in boosts:
+        await start_boost(b.id)
+    if boosts:
+        logger.info("Resumed %d boost campaign(s) from DB", len(boosts))
+
+
 async def stop_boost(boost_id: int) -> None:
     t = _running.pop(boost_id, None)
     if t and not t.done():
@@ -73,7 +86,7 @@ async def _boost_campaign(boost_id: int) -> None:
                 await db.commit()
         return
 
-    # Fetch the target message to extract text for topic analysis
+    # Fetch the target message text (supports text-only and media+caption)
     chat_peer = _resolve_chat_peer(chat_id)
     post_text = ""
     for bt in bot_tasks:
@@ -81,16 +94,34 @@ async def _boost_campaign(boost_id: int) -> None:
             async with async_session_maker() as db:
                 acc = await db.get(Account, bt.account_id)
             client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
-            msg = await client.get_messages(chat_peer, ids=message_id)
+
+            # Try get_messages with raw chat_id integer first (Telethon resolves from entity cache)
+            msg = None
+            for peer_arg in [chat_id, chat_peer]:
+                try:
+                    result = await client.get_messages(peer_arg, ids=message_id)
+                    if result:
+                        msg = result
+                        break
+                except Exception:
+                    pass
+
+            # Fallback: iterate recent messages to find by id
+            if not msg:
+                async for m in client.iter_messages(chat_peer, limit=50):
+                    if m.id == message_id:
+                        msg = m
+                        break
+
             if msg:
-                # Telethon: text is in .message (same as .text); media caption also in .message
-                text = getattr(msg, "message", None) or getattr(msg, "text", None) or ""
-                if text.strip():
-                    post_text = text.strip()[:600]
+                # .message is Telethon's canonical field for text/caption
+                text = (getattr(msg, "message", None) or "").strip()
+                if text:
+                    post_text = text[:600]
                     logger.info("Boost %d: fetched post text (%d chars)", boost_id, len(post_text))
                     break
                 else:
-                    logger.debug("Boost %d: msg %d has no text (media without caption?)", boost_id, message_id)
+                    logger.debug("Boost %d: msg %d has no text (media without caption)", boost_id, message_id)
         except Exception as e:
             logger.debug("Boost %d: failed to fetch message via acc %d: %s", boost_id, bt.account_id, e)
 

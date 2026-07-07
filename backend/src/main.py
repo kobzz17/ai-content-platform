@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.database import init_db
 from src.session_manager import disconnect_all
 from src.api import accounts, messages, ai, automation, channels, warmup, proxies, group_chat
-from src.services import bot_service, channel_service, warmup_service, group_chat_service
+from src.services import bot_service, channel_service, warmup_service, group_chat_service, boost_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,6 +20,7 @@ async def lifespan(app: FastAPI):
     await channel_service.start_all_running()
     await warmup_service.start_all_running()
     await group_chat_service.start_all_running()
+    await boost_service.start_all_running()
     yield
     await disconnect_all()
 
