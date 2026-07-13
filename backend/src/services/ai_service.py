@@ -324,39 +324,90 @@ async def analyze_post_for_boost(post_text: str) -> str:
     return message.content[0].text.strip()
 
 
+# Six distinct comment archetypes to rotate across bot accounts
+_BOOST_STYLES = [
+    {
+        "name": "удивлённый",
+        "instruction": "Короткая эмоциональная реакция удивления — 1 фраза или предложение с вопросом. Можно очень коротко.",
+        "examples": ["Серьёзно? 😳", "Это реально происходит?", "Вот это поворот, не ожидал"],
+    },
+    {
+        "name": "скептик",
+        "instruction": "Лёгкий скептицизм или сомнение — без злобы, просто не веришь до конца. 1 предложение.",
+        "examples": ["Ну посмотрим как оно будет", "Звучит хорошо, главное не только слова", "Интересно надолго ли"],
+    },
+    {
+        "name": "поддерживающий",
+        "instruction": "Согласен или поддерживаешь, но без пафоса и дежурных фраз. По-человечески. 1 предложение.",
+        "examples": ["Ну хоть кто-то в теме идёт", "Да, это нормально на самом деле", "Хорошо что так"],
+    },
+    {
+        "name": "шутник",
+        "instruction": "Найди что-то смешное или ироничное. Короткая шутка или ироничная реплика.",
+        "examples": ["Ну это лор 😂", "Такого не ожидал и никто не ожидал", "Ок теперь всё ясно"],
+    },
+    {
+        "name": "уточняющий",
+        "instruction": "Задай один конкретный вопрос про деталь из поста, которая тебя зацепила. Коротко.",
+        "examples": ["А это надолго?", "И что дальше?", "Это сам решил или предложили?"],
+    },
+    {
+        "name": "нейтральный",
+        "instruction": "Нейтральный комментарий — наблюдение или факт без сильных эмоций. 1 предложение.",
+        "examples": ["Бывает всякое", "Посмотрим что выйдет", "Не первый такой случай"],
+    },
+]
+
+
 async def generate_boost_comment(
     post_text: str,
     topic: str,
     persona: str,
-    existing_comments: list[str] | None = None,
+    own_comments: list[str] | None = None,
+    real_comments: list[str] | None = None,
+    style_index: int = 0,
 ) -> str:
     """Generate a contextual comment for boosting a Telegram post."""
-    existing = ""
-    if existing_comments:
-        joined = " / ".join(existing_comments[-3:])
-        existing = f"\nДругие уже написали: «{joined}». Не повторяй их мысли дословно."
+    style = _BOOST_STYLES[style_index % len(_BOOST_STYLES)]
 
-    if post_text.strip():
-        post_ctx = f"В группе появился пост:\n«{post_text[:400]}»\n\n"
-    else:
-        post_ctx = "В группе обсуждают интересную тему.\n\n"
+    post_ctx = f"Пост:\n«{post_text[:500]}»" if post_text.strip() else f"Тема: {topic}"
+
+    real_ctx = ""
+    if real_comments:
+        joined = "\n".join(f"— {c[:120]}" for c in real_comments[:6])
+        real_ctx = f"\n\nКомментарии которые уже есть под постом:\n{joined}\nТвой должен отличаться по стилю и содержанию от них."
+
+    own_ctx = ""
+    if own_comments:
+        own_ctx = f"\n(Ты уже писал здесь: «{' / '.join(own_comments[-2:])}» — не повторяй эти мысли.)"
 
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
-        max_tokens=120,
-        system=f"{persona}\n\n{_CHAT_STYLE}",
+        max_tokens=100,
+        system=(
+            "Ты — живой человек, пишешь комментарий под постом в Телеграм-канале.\n"
+            f"Твоя персона: {persona}\n\n"
+            "СТРОГИЕ ПРАВИЛА:\n"
+            "• Только русский, разговорный стиль, как обычный человек в интернете\n"
+            "• Максимум 1-2 предложения. Можно 3-7 слов — это нормально\n"
+            "• ЗАПРЕЩЕНО: 'вот это поворот', 'это классика', 'вопрос только в том', 'стоит отметить'\n"
+            "• ЗАПРЕЩЁН шаблон: реакция → анализ → вопрос про ресурсы/поддержку\n"
+            "• Используй конкретные детали из поста — имена, факты — не общие слова\n"
+            "• Если знаешь что-то о людях или событиях из поста — используй это знание\n"
+            "• Без заглавных букв в середине предложения без причины, без лишних эмодзи"
+        ),
         messages=[{
             "role": "user",
             "content": (
-                f"{post_ctx}"
-                f"Тема обсуждения: {topic}\n"
-                f"{existing}\n"
-                "Напиши живой комментарий — мнение, вопрос, схожий опыт или несогласие. "
-                "1-2 предложения, разговорный стиль."
+                f"{post_ctx}\n\n"
+                f"Твой стиль сейчас: {style['name']} — {style['instruction']}\n"
+                f"Примеры тона (не копируй, только для понимания): {' | '.join(style['examples'])}\n"
+                f"{real_ctx}{own_ctx}\n\n"
+                "Напиши комментарий:"
             )
         }],
     )
-    result = message.content[0].text.strip()
+    result = message.content[0].text.strip().strip('"').strip("'")
     if result and result[0].islower():
         result = result[0].upper() + result[1:]
     return result

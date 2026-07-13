@@ -80,8 +80,12 @@ async def _boost_campaign(boost_id: int) -> None:
                 await db.commit()
         return
 
-    # Fetch the channel post text using the first available account
+    # Fetch the channel post text and verify comments are enabled
     post_text = ""
+    comments_enabled = False
+    real_existing_comments: list[str] = []
+    _working_client = None
+    _working_entity = None
     if channel_peer:
         for bt in bot_tasks[:3]:
             try:
@@ -89,16 +93,67 @@ async def _boost_campaign(boost_id: int) -> None:
                     acc = await db.get(Account, bt.account_id)
                 client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
                 channel_entity = await client.get_entity(channel_peer)
-                msg = await client.get_messages(channel_entity, ids=message_id)
+                # Join the channel so we can see replies field on posts
+                try:
+                    from telethon.tl.functions.channels import JoinChannelRequest
+                    await client(JoinChannelRequest(channel_entity))
+                except Exception:
+                    pass
+                # Use iter_messages — it returns full reply info unlike get_messages(ids=)
+                msg = None
+                async for m in client.iter_messages(channel_entity, ids=[message_id]):
+                    msg = m
+                    break
+                if msg is None:
+                    # fallback
+                    msg = await client.get_messages(channel_entity, ids=message_id)
                 if msg:
                     text = (getattr(msg, "message", None) or "").strip()
                     if text:
                         post_text = text[:600]
-                        logger.info("Boost %d: fetched post text (%d chars) from %s",
-                                    boost_id, len(post_text), channel_peer)
-                        break
+                    # replies field is only set when comments are enabled for this post
+                    replies = getattr(msg, "replies", None)
+                    if replies is not None and getattr(replies, "comments", False):
+                        comments_enabled = True
+                    logger.info("Boost %d: post text %d chars, comments_enabled=%s replies=%s from %s",
+                                boost_id, len(post_text), comments_enabled, replies, channel_peer)
+                    _working_client = client
+                    _working_entity = channel_entity
+                    break
             except Exception as e:
                 logger.debug("Boost %d: fetch failed via acc %d: %s", boost_id, bt.account_id, e)
+
+    # Fetch real existing comments to give AI full context of current discussion
+    if comments_enabled and _working_client and _working_entity:
+        try:
+            from telethon.tl.functions.messages import GetDiscussionMessageRequest
+            discussion = await _working_client(
+                GetDiscussionMessageRequest(peer=_working_entity, msg_id=message_id)
+            )
+            if discussion.chats and discussion.messages:
+                disc_group = discussion.chats[0]
+                disc_msg_id = discussion.messages[0].id
+                async for cmsg in _working_client.iter_messages(
+                    disc_group, reply_to=disc_msg_id, limit=15
+                ):
+                    txt = getattr(cmsg, "message", None) or ""
+                    if txt.strip():
+                        real_existing_comments.append(txt[:200])
+            logger.info("Boost %d: fetched %d real existing comments", boost_id, len(real_existing_comments))
+        except Exception as e:
+            logger.debug("Boost %d: couldn't fetch existing comments: %s", boost_id, e)
+
+    if channel_peer and not comments_enabled:
+        err = f"Канал {channel_peer} не поддерживает комментарии (нет связанного чата обсуждений)"
+        logger.error("Boost %d: %s", boost_id, err)
+        async with async_session_maker() as db:
+            db.add(BoostLog(boost_id=boost_id, account_id=bot_tasks[0].account_id,
+                            action="error", text=err))
+            b = await db.get(BoostTask, boost_id)
+            if b:
+                b.status = BoostStatus.done
+            await db.commit()
+        return
 
     # Auto-generate discussion topic from post content if not provided
     if not topic:
@@ -134,7 +189,8 @@ async def _boost_campaign(boost_id: int) -> None:
         delay_sec = max(15.0, (i * slot_min + jitter) * 60)
         sub_tasks.append(asyncio.create_task(
             _post_comment(delay_sec, boost_id, channel_peer, message_id,
-                          bt.account_id, bt.persona, post_text, topic, posted_comments)
+                          bt.account_id, bt.persona, post_text, topic, posted_comments,
+                          real_existing_comments, i)
         ))
 
     await asyncio.gather(*sub_tasks, return_exceptions=True)
@@ -158,6 +214,8 @@ async def _post_comment(
     post_text: str,
     topic: str,
     posted_comments: list[str],
+    real_comments: list[str] | None = None,
+    style_index: int = 0,
 ) -> None:
     from src.services.ai_service import generate_boost_comment
 
@@ -175,11 +233,22 @@ async def _post_comment(
 
     try:
         client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
-        comment = await generate_boost_comment(post_text, topic, persona, list(posted_comments))
+        comment = await generate_boost_comment(
+            post_text, topic, persona,
+            own_comments=list(posted_comments),
+            real_comments=real_comments,
+            style_index=style_index,
+        )
 
         if channel_peer:
-            # Comment on a channel post (posts in linked discussion group)
+            from telethon.tl.functions.channels import JoinChannelRequest
             channel_entity = await client.get_entity(channel_peer)
+            # Join the channel first if not already a member
+            try:
+                await client(JoinChannelRequest(channel_entity))
+            except Exception as join_err:
+                logger.debug("Boost %d: acc %d join attempt: %s", boost_id, account_id, join_err)
+            # Comment on a channel post (via linked discussion group)
             await client.send_message(channel_entity, comment, comment_to=message_id)
         else:
             # Legacy: reply in bot group
