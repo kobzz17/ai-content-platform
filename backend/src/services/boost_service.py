@@ -112,11 +112,35 @@ async def _boost_campaign(boost_id: int) -> None:
                     text = (getattr(msg, "message", None) or "").strip()
                     if text:
                         post_text = text[:600]
-                    replies = getattr(msg, "replies", None)
-                    if replies is not None and getattr(replies, "comments", False):
+                    # Use GetDiscussionMessageRequest as the authoritative check:
+                    # replies=None on old posts doesn't mean comments are impossible —
+                    # the discussion thread may exist if someone already commented.
+                    try:
+                        from telethon.tl.functions.messages import GetDiscussionMessageRequest
+                        discussion = await client(
+                            GetDiscussionMessageRequest(peer=channel_entity, msg_id=message_id)
+                        )
                         comments_enabled = True
-                    logger.info("Boost %d: post text %d chars, comments_enabled=%s replies=%s from %s",
-                                boost_id, len(post_text), comments_enabled, replies, channel_peer)
+                        # Fetch existing comments while we have the discussion info
+                        if discussion.chats and discussion.messages:
+                            disc_group = discussion.chats[0]
+                            disc_msg_id = discussion.messages[0].id
+                            async for cmsg in client.iter_messages(
+                                disc_group, reply_to=disc_msg_id, limit=15
+                            ):
+                                txt = getattr(cmsg, "message", None) or ""
+                                if txt.strip():
+                                    real_existing_comments.append(txt[:200])
+                        logger.info(
+                            "Boost %d: post %d chars, comments_enabled=True, existing=%d from %s",
+                            boost_id, len(post_text), len(real_existing_comments), channel_peer,
+                        )
+                    except Exception as disc_err:
+                        replies = getattr(msg, "replies", None)
+                        logger.info(
+                            "Boost %d: GetDiscussionMessage failed (%s), replies=%s from %s",
+                            boost_id, disc_err, replies, channel_peer,
+                        )
                     _working_client = client
                     _working_entity = channel_entity
                     break
@@ -129,26 +153,6 @@ async def _boost_campaign(boost_id: int) -> None:
         # If we couldn't even fetch the message, it's an access error, not a comments error
         if not _working_client and fetch_errors:
             fetch_error = f"Нет доступа к посту {channel_peer}/{message_id}. Аккаунты не являются участниками канала или канал недоступен. Детали: {'; '.join(fetch_errors[:2])}"
-
-    # Fetch real existing comments to give AI full context of current discussion
-    if comments_enabled and _working_client and _working_entity:
-        try:
-            from telethon.tl.functions.messages import GetDiscussionMessageRequest
-            discussion = await _working_client(
-                GetDiscussionMessageRequest(peer=_working_entity, msg_id=message_id)
-            )
-            if discussion.chats and discussion.messages:
-                disc_group = discussion.chats[0]
-                disc_msg_id = discussion.messages[0].id
-                async for cmsg in _working_client.iter_messages(
-                    disc_group, reply_to=disc_msg_id, limit=15
-                ):
-                    txt = getattr(cmsg, "message", None) or ""
-                    if txt.strip():
-                        real_existing_comments.append(txt[:200])
-            logger.info("Boost %d: fetched %d real existing comments", boost_id, len(real_existing_comments))
-        except Exception as e:
-            logger.debug("Boost %d: couldn't fetch existing comments: %s", boost_id, e)
 
     if channel_peer and fetch_error:
         err = fetch_error
