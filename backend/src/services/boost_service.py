@@ -83,10 +83,12 @@ async def _boost_campaign(boost_id: int) -> None:
     # Fetch the channel post text and verify comments are enabled
     post_text = ""
     comments_enabled = False
+    fetch_error: str | None = None
     real_existing_comments: list[str] = []
     _working_client = None
     _working_entity = None
     if channel_peer:
+        fetch_errors: list[str] = []
         for bt in bot_tasks[:3]:
             try:
                 async with async_session_maker() as db:
@@ -105,13 +107,11 @@ async def _boost_campaign(boost_id: int) -> None:
                     msg = m
                     break
                 if msg is None:
-                    # fallback
                     msg = await client.get_messages(channel_entity, ids=message_id)
                 if msg:
                     text = (getattr(msg, "message", None) or "").strip()
                     if text:
                         post_text = text[:600]
-                    # replies field is only set when comments are enabled for this post
                     replies = getattr(msg, "replies", None)
                     if replies is not None and getattr(replies, "comments", False):
                         comments_enabled = True
@@ -120,8 +120,15 @@ async def _boost_campaign(boost_id: int) -> None:
                     _working_client = client
                     _working_entity = channel_entity
                     break
+                else:
+                    fetch_errors.append(f"acc {bt.account_id}: message not found")
             except Exception as e:
-                logger.debug("Boost %d: fetch failed via acc %d: %s", boost_id, bt.account_id, e)
+                fetch_errors.append(f"acc {bt.account_id}: {e}")
+                logger.warning("Boost %d: fetch failed via acc %d: %s", boost_id, bt.account_id, e)
+
+        # If we couldn't even fetch the message, it's an access error, not a comments error
+        if not _working_client and fetch_errors:
+            fetch_error = f"Нет доступа к посту {channel_peer}/{message_id}. Аккаунты не являются участниками канала или канал недоступен. Детали: {'; '.join(fetch_errors[:2])}"
 
     # Fetch real existing comments to give AI full context of current discussion
     if comments_enabled and _working_client and _working_entity:
@@ -143,8 +150,14 @@ async def _boost_campaign(boost_id: int) -> None:
         except Exception as e:
             logger.debug("Boost %d: couldn't fetch existing comments: %s", boost_id, e)
 
-    if channel_peer and not comments_enabled:
-        err = f"Канал {channel_peer} не поддерживает комментарии (нет связанного чата обсуждений)"
+    if channel_peer and fetch_error:
+        err = fetch_error
+    elif channel_peer and not comments_enabled:
+        err = f"Канал {channel_peer} не поддерживает комментарии для этого поста (replies=None). Возможно, пост опубликован до привязки группы обсуждений"
+    else:
+        err = None
+
+    if err:
         logger.error("Boost %d: %s", boost_id, err)
         async with async_session_maker() as db:
             db.add(BoostLog(boost_id=boost_id, account_id=bot_tasks[0].account_id,
