@@ -44,6 +44,76 @@ async def start_all_running() -> None:
         logger.info("Resumed %d boost campaign(s) from DB", len(boosts))
 
 
+async def _find_disc_thread(
+    client, channel_entity, message_id: int
+) -> tuple[object | None, int | None, list[str]]:
+    """Find the discussion thread for a channel post.
+
+    Returns (disc_group_entity, linked_msg_id, existing_comments).
+    Returns (None, None, []) if no thread exists.
+
+    Two-method approach:
+    1. GetDiscussionMessageRequest — works for posts where replies.comments=True
+    2. Manual fwd_from search — works for older posts where replies=None but thread exists
+    """
+    from telethon.tl.functions.messages import GetDiscussionMessageRequest
+    from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
+
+    existing: list[str] = []
+
+    # Method 1: standard API
+    try:
+        disc = await client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=message_id))
+        if disc.chats and disc.messages:
+            disc_group = disc.chats[0]
+            disc_msg_id = disc.messages[0].id
+            async for cmsg in client.iter_messages(disc_group, reply_to=disc_msg_id, limit=15):
+                txt = getattr(cmsg, "message", None) or ""
+                if txt.strip():
+                    existing.append(txt[:200])
+            return disc_group, disc_msg_id, existing
+    except Exception as e:
+        logger.debug("_find_disc_thread: GetDiscussionMessage failed: %s", e)
+
+    # Method 2: find linked message manually in discussion group
+    try:
+        full = await client(GetFullChannelRequest(channel_entity))
+        linked_chat_id = full.full_chat.linked_chat_id
+        if not linked_chat_id:
+            return None, None, []
+
+        disc_chat = next((c for c in full.chats if c.id == linked_chat_id), None)
+        if not disc_chat:
+            return None, None, []
+
+        try:
+            await client(JoinChannelRequest(disc_chat))
+        except Exception:
+            pass
+
+        channel_id = channel_entity.id
+        async for msg in client.iter_messages(disc_chat, limit=100):
+            fwd = getattr(msg, "fwd_from", None)
+            if not fwd:
+                continue
+            fwd_ch = getattr(fwd, "from_id", None)
+            if (
+                getattr(fwd_ch, "channel_id", None) == channel_id
+                and getattr(fwd, "channel_post", None) == message_id
+            ):
+                # Found the linked message — get existing replies
+                async for cmsg in client.iter_messages(disc_chat, reply_to=msg.id, limit=15):
+                    txt = getattr(cmsg, "message", None) or ""
+                    if txt.strip():
+                        existing.append(txt[:200])
+                logger.info("_find_disc_thread: found via fwd search, linked_msg=%d", msg.id)
+                return disc_chat, msg.id, existing
+    except Exception as e:
+        logger.debug("_find_disc_thread: manual search failed: %s", e)
+
+    return None, None, []
+
+
 async def _boost_campaign(boost_id: int) -> None:
     from src.services.ai_service import analyze_post_for_boost
 
@@ -51,7 +121,7 @@ async def _boost_campaign(boost_id: int) -> None:
         boost = await db.get(BoostTask, boost_id)
         if not boost:
             return
-        channel_peer = boost.channel_peer  # e.g. "@channelname" or "-100123456"
+        channel_peer = boost.channel_peer
         message_id = boost.message_id
         topic = boost.topic
         duration_min = boost.duration_minutes
@@ -63,7 +133,6 @@ async def _boost_campaign(boost_id: int) -> None:
         )
         all_tasks = r.scalars().all()
 
-    # Deduplicate: one task per account (take the first one found)
     seen: set[int] = set()
     bot_tasks: list[BotTask] = []
     for bt in all_tasks:
@@ -80,13 +149,13 @@ async def _boost_campaign(boost_id: int) -> None:
                 await db.commit()
         return
 
-    # Fetch the channel post text and verify comments are enabled
+    # Fetch post text and find discussion thread
     post_text = ""
-    comments_enabled = False
-    fetch_error: str | None = None
+    disc_group_entity = None
+    disc_linked_msg_id: int | None = None
     real_existing_comments: list[str] = []
-    _working_client = None
-    _working_entity = None
+    fetch_error: str | None = None
+
     if channel_peer:
         fetch_errors: list[str] = []
         for bt in bot_tasks[:3]:
@@ -95,54 +164,32 @@ async def _boost_campaign(boost_id: int) -> None:
                     acc = await db.get(Account, bt.account_id)
                 client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
                 channel_entity = await client.get_entity(channel_peer)
-                # Join the channel so we can see replies field on posts
                 try:
                     from telethon.tl.functions.channels import JoinChannelRequest
                     await client(JoinChannelRequest(channel_entity))
                 except Exception:
                     pass
-                # Use iter_messages — it returns full reply info unlike get_messages(ids=)
+
                 msg = None
                 async for m in client.iter_messages(channel_entity, ids=[message_id]):
                     msg = m
                     break
                 if msg is None:
                     msg = await client.get_messages(channel_entity, ids=message_id)
+
                 if msg:
                     text = (getattr(msg, "message", None) or "").strip()
                     if text:
                         post_text = text[:600]
-                    # Use GetDiscussionMessageRequest as the authoritative check:
-                    # replies=None on old posts doesn't mean comments are impossible —
-                    # the discussion thread may exist if someone already commented.
-                    try:
-                        from telethon.tl.functions.messages import GetDiscussionMessageRequest
-                        discussion = await client(
-                            GetDiscussionMessageRequest(peer=channel_entity, msg_id=message_id)
-                        )
-                        comments_enabled = True
-                        # Fetch existing comments while we have the discussion info
-                        if discussion.chats and discussion.messages:
-                            disc_group = discussion.chats[0]
-                            disc_msg_id = discussion.messages[0].id
-                            async for cmsg in client.iter_messages(
-                                disc_group, reply_to=disc_msg_id, limit=15
-                            ):
-                                txt = getattr(cmsg, "message", None) or ""
-                                if txt.strip():
-                                    real_existing_comments.append(txt[:200])
-                        logger.info(
-                            "Boost %d: post %d chars, comments_enabled=True, existing=%d from %s",
-                            boost_id, len(post_text), len(real_existing_comments), channel_peer,
-                        )
-                    except Exception as disc_err:
-                        replies = getattr(msg, "replies", None)
-                        logger.info(
-                            "Boost %d: GetDiscussionMessage failed (%s), replies=%s from %s",
-                            boost_id, disc_err, replies, channel_peer,
-                        )
-                    _working_client = client
-                    _working_entity = channel_entity
+
+                    disc_group_entity, disc_linked_msg_id, real_existing_comments = (
+                        await _find_disc_thread(client, channel_entity, message_id)
+                    )
+                    logger.info(
+                        "Boost %d: post %d chars, disc_thread=%s, existing=%d from %s",
+                        boost_id, len(post_text),
+                        disc_linked_msg_id, len(real_existing_comments), channel_peer,
+                    )
                     break
                 else:
                     fetch_errors.append(f"acc {bt.account_id}: message not found")
@@ -150,22 +197,23 @@ async def _boost_campaign(boost_id: int) -> None:
                 fetch_errors.append(f"acc {bt.account_id}: {e}")
                 logger.warning("Boost %d: fetch failed via acc %d: %s", boost_id, bt.account_id, e)
 
-        # If we couldn't even fetch the message, it's an access error, not a comments error
-        if not _working_client and fetch_errors:
-            fetch_error = f"Нет доступа к посту {channel_peer}/{message_id}. Аккаунты не являются участниками канала или канал недоступен. Детали: {'; '.join(fetch_errors[:2])}"
+        if disc_group_entity is None:
+            if fetch_errors and not post_text:
+                fetch_error = (
+                    f"Нет доступа к посту {channel_peer}/{message_id}. "
+                    f"Детали: {'; '.join(fetch_errors[:2])}"
+                )
+            else:
+                fetch_error = (
+                    f"Пост {channel_peer}/{message_id} не имеет треда обсуждений. "
+                    f"Возможно, канал не связан с группой или пост слишком старый."
+                )
 
-    if channel_peer and fetch_error:
-        err = fetch_error
-    elif channel_peer and not comments_enabled:
-        err = f"Канал {channel_peer} не поддерживает комментарии для этого поста (replies=None). Возможно, пост опубликован до привязки группы обсуждений"
-    else:
-        err = None
-
-    if err:
-        logger.error("Boost %d: %s", boost_id, err)
+    if fetch_error:
+        logger.error("Boost %d: %s", boost_id, fetch_error)
         async with async_session_maker() as db:
             db.add(BoostLog(boost_id=boost_id, account_id=bot_tasks[0].account_id,
-                            action="error", text=err))
+                            action="error", text=fetch_error))
             b = await db.get(BoostTask, boost_id)
             if b:
                 b.status = BoostStatus.done
@@ -187,14 +235,12 @@ async def _boost_campaign(boost_id: int) -> None:
                 logger.warning("Boost %d: topic analysis failed: %s", boost_id, e)
         topic = topic or "обсуждение поста"
 
-    # Update total_accounts
     async with async_session_maker() as db:
         b = await db.get(BoostTask, boost_id)
         if b:
             b.total_accounts = len(bot_tasks)
             await db.commit()
 
-    # Schedule comments evenly across duration with random jitter
     random.shuffle(bot_tasks)
     n = len(bot_tasks)
     slot_min = duration_min / n if n > 0 else duration_min
@@ -205,9 +251,12 @@ async def _boost_campaign(boost_id: int) -> None:
         jitter = random.uniform(-min(2.0, slot_min / 4), min(2.0, slot_min / 4))
         delay_sec = max(15.0, (i * slot_min + jitter) * 60)
         sub_tasks.append(asyncio.create_task(
-            _post_comment(delay_sec, boost_id, channel_peer, message_id,
-                          bt.account_id, bt.persona, post_text, topic, posted_comments,
-                          real_existing_comments, i)
+            _post_comment(
+                delay_sec, boost_id, channel_peer, message_id,
+                bt.account_id, bt.persona, post_text, topic, posted_comments,
+                real_existing_comments, i,
+                disc_group_entity, disc_linked_msg_id,
+            )
         ))
 
     await asyncio.gather(*sub_tasks, return_exceptions=True)
@@ -233,6 +282,8 @@ async def _post_comment(
     posted_comments: list[str],
     real_comments: list[str] | None = None,
     style_index: int = 0,
+    disc_group_entity=None,
+    disc_linked_msg_id: int | None = None,
 ) -> None:
     from src.services.ai_service import generate_boost_comment
 
@@ -259,18 +310,24 @@ async def _post_comment(
 
         if channel_peer:
             from telethon.tl.functions.channels import JoinChannelRequest
-            channel_entity = await client.get_entity(channel_peer)
-            # Join the channel first if not already a member
-            try:
-                await client(JoinChannelRequest(channel_entity))
-            except Exception as join_err:
-                logger.debug("Boost %d: acc %d join attempt: %s", boost_id, account_id, join_err)
-            # Comment on a channel post (via linked discussion group)
-            await client.send_message(channel_entity, comment, comment_to=message_id)
+
+            if disc_group_entity is not None and disc_linked_msg_id is not None:
+                # Send directly to discussion group as reply to the linked message.
+                # This works for both new posts and old posts where replies=None.
+                try:
+                    await client(JoinChannelRequest(disc_group_entity))
+                except Exception:
+                    pass
+                await client.send_message(disc_group_entity, comment, reply_to=disc_linked_msg_id)
+            else:
+                # Fallback: let Telethon route via comment_to (works for standard posts)
+                channel_entity = await client.get_entity(channel_peer)
+                try:
+                    await client(JoinChannelRequest(channel_entity))
+                except Exception:
+                    pass
+                await client.send_message(channel_entity, comment, comment_to=message_id)
         else:
-            # Legacy: reply in bot group
-            from telethon.tl.types import PeerChat, PeerChannel
-            raw = -int(str(boost_id))  # placeholder — shouldn't be reached for new boosts
             await client.send_message(message_id, comment)
 
         posted_comments.append(comment)
