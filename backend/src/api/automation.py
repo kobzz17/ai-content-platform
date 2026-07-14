@@ -241,17 +241,26 @@ def _parse_boost_link(link: str) -> tuple[str | None, int]:
     s = link.strip()
     if re.match(r'^\d+$', s):
         return None, int(s)
+
+    # Normalise: add https:// if missing, strip trailing slashes
+    if not re.match(r'https?://', s):
+        s = "https://" + s
+    s = s.rstrip("/")
+
     # Private channel: https://t.me/c/CHANNEL_ID/MSG_ID
     m = re.match(r'https?://t\.me/c/(\d+)/(\d+)', s)
     if m:
         return f"-100{m.group(1)}", int(m.group(2))
-    # Public channel/group: https://t.me/username/MSG_ID
-    m2 = re.match(r'https?://t\.me/([^/?]+)/(\d+)', s)
+
+    # Public channel: https://t.me/username/MSG_ID
+    # Also handle extra segment: t.me/channel/username/MSG_ID (non-standard but user-friendly)
+    m2 = re.match(r'https?://t\.me/(?:channel/)?([A-Za-z0-9_]+)/(\d+)', s)
     if m2:
         username = m2.group(1)
         if username not in ("c", "joinchat"):
             return f"@{username}", int(m2.group(2))
-    raise ValueError("Введи ссылку на пост канала (t.me/channel/N) или ID сообщения")
+
+    raise ValueError("Введи ссылку на пост канала (t.me/username/N) или ID сообщения")
 
 
 @router.post("/boost", response_model=BoostOut, status_code=201)
