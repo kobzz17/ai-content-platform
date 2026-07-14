@@ -231,36 +231,51 @@ def _boost_out(b: BoostTask) -> BoostOut:
 
 
 def _parse_boost_link(link: str) -> tuple[str | None, int]:
-    """Return (channel_peer, message_id) from a Telegram post link.
+    """Return (channel_peer, message_id) from any Telegram post link variant.
 
-    channel_peer formats returned:
-      '@username'       — public channel/group
-      '-100CHANNEL_ID'  — private channel/supergroup (t.me/c/ID/MSG)
-      None              — plain integer ID entered (legacy group boost)
+    Supported formats:
+      https://t.me/username/123
+      https://t.me/c/CHANNEL_ID/123      (private channel)
+      t.me/username/123                   (no protocol)
+      t.me/channel/username/123           (extra segment)
+      t.me/s/username/123                 (channel preview)
+      https://telegram.me/username/123    (old domain)
+      @username/123
+      123                                 (plain message ID, legacy)
     """
     s = link.strip()
+
+    # Plain message ID
     if re.match(r'^\d+$', s):
         return None, int(s)
 
-    # Normalise: add https:// if missing, strip trailing slashes
-    if not re.match(r'https?://', s):
-        s = "https://" + s
-    s = s.rstrip("/")
+    # @username/MSG_ID
+    m = re.match(r'^(@[\w]{3,})/(\d+)$', s)
+    if m:
+        return m.group(1), int(m.group(2))
 
-    # Private channel: https://t.me/c/CHANNEL_ID/MSG_ID
-    m = re.match(r'https?://t\.me/c/(\d+)/(\d+)', s)
+    # Normalize URL
+    if not re.match(r'https?://', s, re.I):
+        s = 'https://' + s
+    s = re.split(r'[?#]', s)[0].rstrip('/')          # strip query/fragment/trailing slash
+    s = re.sub(r'telegram\.me', 't.me', s, flags=re.I)  # normalize domain
+
+    # Private channel: t.me/c/CHANNEL_ID/MSG_ID
+    m = re.match(r'https?://t\.me/c/(\d+)/(\d+)', s, re.I)
     if m:
         return f"-100{m.group(1)}", int(m.group(2))
 
-    # Public channel: https://t.me/username/MSG_ID
-    # Also handle extra segment: t.me/channel/username/MSG_ID (non-standard but user-friendly)
-    m2 = re.match(r'https?://t\.me/(?:channel/)?([A-Za-z0-9_]+)/(\d+)', s)
-    if m2:
-        username = m2.group(1)
-        if username not in ("c", "joinchat"):
-            return f"@{username}", int(m2.group(2))
+    # Public channel with optional path prefix (channel/, s/, etc.)
+    m = re.match(r'https?://t\.me/(?:(?:channel|s)/)?([A-Za-z]\w{2,})/(\d+)', s, re.I)
+    if m:
+        username = m.group(1).lower()
+        if username not in ('c', 'joinchat', 'addstickers', 'share', 'boost', 'proxy'):
+            return f"@{m.group(1)}", int(m.group(2))
 
-    raise ValueError("Введи ссылку на пост канала (t.me/username/N) или ID сообщения")
+    raise ValueError(
+        "Не удалось распознать ссылку. Скопируй её прямо из Telegram: "
+        "нажми '•••' на посте → 'Копировать ссылку'"
+    )
 
 
 @router.post("/boost", response_model=BoostOut, status_code=201)

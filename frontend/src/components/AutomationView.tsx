@@ -638,11 +638,11 @@ function BoostModal({ onCreated, onClose }: { onCreated: (b: BoostTask) => void;
         <input
           style={s.input}
           value={messageLink}
-          onChange={e => setMessageLink(e.target.value)}
-          placeholder="https://t.me/channel_name/123  или  https://t.me/c/ID/123"
+          onChange={e => { setMessageLink(e.target.value); setError(""); }}
+          placeholder="https://t.me/kosti_news/12285"
         />
         <div style={{ color: "#555", fontSize: 11 }}>
-          В Telegram: нажми «•••» → «Копировать ссылку» на посте в канале
+          Любой формат: t.me/channel/123, https://t.me/c/ID/123 — просто скопируй ссылку из Telegram
         </div>
 
         <label style={s.label}>Тема обсуждения (необязательно)</label>
