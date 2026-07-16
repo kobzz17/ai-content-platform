@@ -3,7 +3,7 @@ import asyncio
 import logging
 import random
 from datetime import datetime
-from sqlalchemy import select
+from sqlalchemy import select, desc
 from src.database import async_session_maker
 from src.models import BoostTask, BoostLog, BoostStatus, BotTask, TaskStatus, Account
 import src.session_manager as sm
@@ -299,6 +299,31 @@ async def _boost_campaign(boost_id: int) -> None:
     random.shuffle(bot_tasks)
     n = len(bot_tasks)
     slot_min = duration_min / n if n > 0 else duration_min
+
+    # Pre-assign comment formats and opinion stances for guaranteed diversity
+    from src.services.ai_service import _COMMENT_FORMATS, _STANCE_INSTRUCTIONS
+    fmt_pool = list(_COMMENT_FORMATS)  # list of (name, instruction)
+    stance_pool = list(_STANCE_INSTRUCTIONS.keys())
+    # Repeat pools to cover all bots, then shuffle
+    assigned_formats = (fmt_pool * ((n // len(fmt_pool)) + 1))[:n]
+    assigned_stances = (stance_pool * ((n // len(stance_pool)) + 1))[:n]
+    random.shuffle(assigned_formats)
+    random.shuffle(assigned_stances)
+
+    # Load style memory (past comments) per account from BoostLog
+    style_memory: dict[int, list[str]] = {}
+    async with async_session_maker() as db:
+        for bt in bot_tasks:
+            r = await db.execute(
+                select(BoostLog.text)
+                .where(BoostLog.account_id == bt.account_id)
+                .where(BoostLog.action == "commented")
+                .order_by(desc(BoostLog.id))
+                .limit(8)
+            )
+            rows = r.fetchall()
+            style_memory[bt.account_id] = [row[0] for row in rows if row[0]]
+
     # Shared list of posted comments with msg_id so later bots can reply to earlier ones
     posted_comments: list[dict] = []
 
@@ -315,6 +340,9 @@ async def _boost_campaign(boost_id: int) -> None:
                 extra_context=extra_context,
                 media_bytes=post_media_bytes,
                 media_type=post_media_type,
+                assigned_format=assigned_formats[i],
+                stance=assigned_stances[i],
+                style_examples=style_memory.get(bt.account_id, []),
             )
         ))
 
@@ -346,6 +374,9 @@ async def _post_comment(
     extra_context: str = "",
     media_bytes: bytes | None = None,
     media_type: str = "image/jpeg",
+    assigned_format: tuple[str, str] | None = None,
+    stance: str = "neutral",
+    style_examples: list[str] | None = None,
 ) -> None:
     from src.services.ai_service import generate_boost_comment
 
@@ -374,6 +405,9 @@ async def _post_comment(
             extra_context=extra_context,
             media_bytes=media_bytes,
             media_type=media_type,
+            assigned_format=assigned_format,
+            stance=stance,
+            style_examples=style_examples,
         )
 
         # Determine which message to reply to

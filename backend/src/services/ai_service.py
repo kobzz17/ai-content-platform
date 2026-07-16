@@ -324,38 +324,47 @@ async def analyze_post_for_boost(post_text: str) -> str:
     return message.content[0].text.strip()
 
 
-# Comment format options: (name, instruction, weight)
+# Comment format options: (name, instruction)
+# Assigned per-bot at campaign start to guarantee diversity — no random selection here
 _COMMENT_FORMATS = [
     ("emoji_only",
-     "ТОЛЬКО эмодзи — от 2 до 6 штук подряд, НОЛЬ слов. Выбери под настроение.",
-     10),
+     "ТОЛЬКО эмодзи — 3–5 штук. НОЛЬ слов. Выбирай эмодзи РАЗНООБРАЗНЫЕ — НЕ копируй то что видишь на фото или в посте."),
     ("ultra_short",
-     "2–4 слова, без точки, можно с маленькой буквы. Реакция на рефлексе.",
-     15),
+     "2–4 слова, без точки, можно с маленькой буквы. Реакция на рефлексе."),
     ("short_casual",
-     "1 предложение. Без точки в конце необязательно. Живо, не официально.",
-     45),
+     "1 предложение. Без точки в конце необязательно. Живо, не официально."),
     ("medium",
-     "1–2 предложения. Можно с эмодзи внутри текста или в конце, можно без. По-человечески.",
-     30),
+     "1–2 предложения. Можно с эмодзи внутри текста или в конце, можно без. По-человечески."),
+    ("question",
+     "Один короткий вопрос — конкретный, про деталь или ситуацию. Без точки в конце."),
+    ("tangent",
+     "1 предложение — уйди чуть в сторону: личная ассоциация, другой угол, что-то смежное."),
 ]
+
+# Opinion stances — assigned per-bot to guarantee diverse viewpoints in one campaign
+_STANCE_INSTRUCTIONS = {
+    "positive":  "Ты позитивно настроен — одобряешь, восхищаешься, но без пафоса.",
+    "critical":  "Ты скептичен или мягко критичен — 'ну хз', 'мне никогда не нравилась', 'не понимаю хайпа'. Без агрессии.",
+    "neutral":   "Ты нейтрален — констатируешь факт или наблюдение без личной оценки.",
+    "ironic":    "Лёгкая ирония или подкол — не смеёшься в лицо, но есть сарказм.",
+    "engaging":  "Ты вовлекаешь — задаёшь вопрос или провоцируешь других высказаться.",
+    "tangent":   "Ты уходишь в сторону — личный опыт, ассоциация, неожиданный угол.",
+}
 
 _BOOST_SYSTEM = (
     "Ты пишешь комментарий в Телеграм как обычный русскоязычный пользователь.\n\n"
-    "ЗАПРЕЩЕНО НАВСЕГДА:\n"
-    "• длинное тире (—) — не используй вообще\n"
+    "ЗАПРЕЩЕНО:\n"
+    "• длинное тире (—)\n"
     "• 'стоит отметить', 'безусловно', 'действительно', 'следует', 'важно понимать', 'однако', 'тем не менее'\n"
     "• идеальная пунктуация в каждом предложении\n"
-    "• эмодзи в конце каждого сообщения (только если реально нужно)\n"
     "• шаблон: реакция + анализ + вопрос\n"
-    "• заглавные буквы в середине без причины\n\n"
-    "РАЗРЕШЕНО И ПРИВЕТСТВУЕТСЯ:\n"
+    "• повторять эмодзи которые уже есть в посте, на фото или в других комментариях\n\n"
+    "РАЗРЕШЕНО:\n"
     "• писать с маленькой буквы\n"
     "• не ставить точку в конце\n"
     "• 'ну', 'блин', 'кстати', 'короче', 'вообще', '...'\n"
-    "• сленг: 'орнул', 'капец', 'жесть', 'топ', 'да ладно', 'ой всё', 'лол', 'хаха', 'ужас'\n"
-    "• неполные предложения если так звучит естественно\n"
-    "• иногда только эмодзи или 2 слова\n"
+    "• сленг: 'орнул', 'капец', 'жесть', 'топ', 'да ладно', 'ой всё', 'лол', 'хаха'\n"
+    "• неполные предложения если звучит естественно\n"
 )
 
 
@@ -395,24 +404,27 @@ async def generate_boost_comment(
     extra_context: str = "",
     media_bytes: bytes | None = None,
     media_type: str = "image/jpeg",
+    assigned_format: tuple[str, str] | None = None,
+    stance: str = "neutral",
+    style_examples: list[str] | None = None,
 ) -> tuple[str, int | None]:
     """Generate a contextual comment for boosting a Telegram post.
 
     Returns (comment_text, reply_to_index) where reply_to_index is an index
     into prev_comments (reply to that bot's comment) or None (reply to the post).
+
+    assigned_format: pre-assigned (name, instruction) from campaign start for diversity.
+    stance: opinion stance (positive/critical/neutral/ironic/engaging/tangent).
+    style_examples: past comments from this account — used as style memory.
     """
     import base64
 
-    # Pick format randomly by weight
-    names, instructions, weights = zip(*_COMMENT_FORMATS)
-    fmt_name, fmt_instruction = random.choices(
-        list(zip(names, instructions)), weights=list(weights)
-    )[0]
+    fmt_name, fmt_instruction = assigned_format if assigned_format else _COMMENT_FORMATS[style_index % len(_COMMENT_FORMATS)][:2]
 
-    # Decide whether to reply to a previous bot comment (~40% if any exist)
+    # Decide whether to reply to a previous bot comment (~40% if any exist and format allows)
     reply_to_index: int | None = None
     reply_target_text: str = ""
-    if prev_comments and fmt_name != "emoji_only" and random.random() < 0.40:
+    if prev_comments and fmt_name not in ("emoji_only", "ultra_short") and random.random() < 0.40:
         reply_to_index = random.randint(0, len(prev_comments) - 1)
         reply_target_text = prev_comments[reply_to_index].get("text", "")[:150]
 
@@ -420,32 +432,57 @@ async def generate_boost_comment(
 
     context_block = ""
     if extra_context:
-        context_block = f"\n\nДополнительный контекст из интернета:\n{extra_context[:300]}"
+        context_block = f"\n\nКонтекст из интернета:\n{extra_context[:300]}"
 
     real_ctx = ""
     if real_comments:
         joined = "\n".join(f"— {c[:100]}" for c in real_comments[:5])
-        real_ctx = f"\n\nДругие комментарии под постом (отличайся от них):\n{joined}"
+        real_ctx = f"\n\nДругие комментарии под постом:\n{joined}"
+
+    # Style memory — show how this account has written before
+    style_ctx = ""
+    if style_examples:
+        joined = " / ".join(f'«{c[:80]}»' for c in style_examples[-5:])
+        style_ctx = f"\n\nТак ты обычно пишешь (твой стиль — придерживайся его):\n{joined}"
 
     own_ctx = ""
     if own_comments:
-        own_ctx = f"\n(Ты уже писал тут: «{' / '.join(own_comments[-2:])}» — не повторяй.)"
+        own_ctx = f"\n(В этом буст-треде ты уже писал: «{' / '.join(own_comments[-2:])}» — не повторяй.)"
+
+    # Collect used emojis from prev_comments to avoid repetition
+    used_emojis = ""
+    if prev_comments:
+        import re
+        emoji_pattern = re.compile(
+            "[\U0001F300-\U0001F9FF\U00002600-\U000027BF\U0000FE00-\U0000FEFF]",
+            re.UNICODE
+        )
+        found = []
+        for c in prev_comments:
+            found.extend(emoji_pattern.findall(c.get("text", "")))
+        if found:
+            used_emojis = f"\nЭти эмодзи уже использованы другими — НЕ повторяй: {''.join(set(found[:15]))}"
+
+    stance_instruction = _STANCE_INSTRUCTIONS.get(stance, "")
 
     if reply_target_text:
         task = (
+            f"Твоя позиция: {stance_instruction}\n"
             f"Ты отвечаешь на комментарий:\n«{reply_target_text}»\n\n"
             f"Формат: {fmt_instruction}"
         )
     else:
-        task = f"Формат твоего комментария: {fmt_instruction}"
+        task = (
+            f"Твоя позиция: {stance_instruction}\n"
+            f"Формат: {fmt_instruction}"
+        )
 
     text_prompt = (
-        f"{post_ctx}{context_block}{real_ctx}{own_ctx}\n\n"
+        f"{post_ctx}{context_block}{real_ctx}{style_ctx}{own_ctx}{used_emojis}\n\n"
         f"{task}\n\n"
         "Напиши:"
     )
 
-    # Build message content — include image if available
     if media_bytes:
         user_content = [
             {
