@@ -165,7 +165,7 @@ async def _boost_campaign(boost_id: int) -> None:
 
     if channel_peer:
         fetch_errors: list[str] = []
-        for bt in bot_tasks[:3]:
+        for bt in bot_tasks:  # try ALL accounts until one succeeds
             try:
                 async with async_session_maker() as db:
                     acc = await db.get(Account, bt.account_id)
@@ -202,15 +202,19 @@ async def _boost_campaign(boost_id: int) -> None:
                     await _find_disc_thread(client, channel_entity, message_id,
                                             post_date=getattr(msg, "date", None))
                 )
+            except Exception as e:
+                logger.warning("Boost %d: _find_disc_thread failed via acc %d: %s",
+                               boost_id, bt.account_id, e)
+                continue  # try next account
+
+            if disc_group_entity is not None:
                 logger.info(
                     "Boost %d: post %d chars, disc_thread=%s, existing=%d from %s",
                     boost_id, len(post_text),
                     disc_linked_msg_id, len(real_existing_comments), channel_peer,
                 )
-                break  # success — stop trying more accounts
-            except Exception as e:
-                logger.warning("Boost %d: _find_disc_thread failed via acc %d: %s",
-                               boost_id, bt.account_id, e)
+                break  # found thread — stop trying more accounts
+            # else: thread not found via this account, try next one
 
         if disc_group_entity is None:
             if fetch_errors and not post_text:
