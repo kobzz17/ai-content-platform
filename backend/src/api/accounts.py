@@ -160,13 +160,14 @@ async def import_batch(
                 settings.telegram_api_id,
                 settings.telegram_api_hash,
             )
-            await client.connect()
-            if not await client.is_user_authorized():
+            try:
+                await client.connect()
+                if not await client.is_user_authorized():
+                    failed.append({"label": label, "error": "Сессия истекла или не авторизована"})
+                    continue
+                me = await client.get_me()
+            finally:
                 await client.disconnect()
-                failed.append({"label": label, "error": "Сессия истекла или не авторизована"})
-                continue
-            me = await client.get_me()
-            await client.disconnect()
 
             # Save the phone properly
             phone = getattr(me, "phone", None) or f"unknown_{me.id}"
@@ -461,9 +462,11 @@ async def import_session_files(
                 settings.telegram_api_id,
                 settings.telegram_api_hash,
             )
-            await client.connect()
-            me = await client.get_me()
-            await client.disconnect()
+            try:
+                await client.connect()
+                me = await client.get_me()
+            finally:
+                await client.disconnect()
             if not me:
                 raise ValueError("Не удалось получить данные аккаунта")
 
