@@ -257,6 +257,17 @@ async def _boost_campaign(boost_id: int) -> None:
                 logger.warning("Boost %d: topic analysis failed: %s", boost_id, e)
         topic = topic or "обсуждение поста"
 
+    # Search web for extra context about people/events in the post (once, shared by all bots)
+    extra_context = ""
+    if post_text:
+        try:
+            from src.services.ai_service import search_boost_context
+            extra_context = await search_boost_context(post_text)
+            if extra_context:
+                logger.info("Boost %d: web context fetched (%d chars)", boost_id, len(extra_context))
+        except Exception as e:
+            logger.warning("Boost %d: web context search failed: %s", boost_id, e)
+
     async with async_session_maker() as db:
         b = await db.get(BoostTask, boost_id)
         if b:
@@ -266,7 +277,8 @@ async def _boost_campaign(boost_id: int) -> None:
     random.shuffle(bot_tasks)
     n = len(bot_tasks)
     slot_min = duration_min / n if n > 0 else duration_min
-    posted_comments: list[str] = []
+    # Shared list of posted comments with msg_id so later bots can reply to earlier ones
+    posted_comments: list[dict] = []
 
     sub_tasks = []
     for i, bt in enumerate(bot_tasks):
@@ -278,6 +290,7 @@ async def _boost_campaign(boost_id: int) -> None:
                 bt.account_id, bt.persona, post_text, topic, posted_comments,
                 real_existing_comments, i,
                 disc_group_entity, disc_linked_msg_id,
+                extra_context=extra_context,
             )
         ))
 
@@ -301,11 +314,12 @@ async def _post_comment(
     persona: str,
     post_text: str,
     topic: str,
-    posted_comments: list[str],
+    posted_comments: list[dict],
     real_comments: list[str] | None = None,
     style_index: int = 0,
     disc_group_entity=None,
     disc_linked_msg_id: int | None = None,
+    extra_context: str = "",
 ) -> None:
     from src.services.ai_service import generate_boost_comment
 
@@ -323,20 +337,30 @@ async def _post_comment(
 
     try:
         client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
-        comment = await generate_boost_comment(
+
+        own_texts = [c["text"] for c in posted_comments if c.get("account_id") == account_id]
+        comment, reply_to_index = await generate_boost_comment(
             post_text, topic, persona,
-            own_comments=list(posted_comments),
+            own_comments=own_texts,
             real_comments=real_comments,
             style_index=style_index,
+            prev_comments=list(posted_comments),
+            extra_context=extra_context,
         )
 
+        # Determine which message to reply to
+        reply_to_id = disc_linked_msg_id
+        if reply_to_index is not None and 0 <= reply_to_index < len(posted_comments):
+            prev_msg_id = posted_comments[reply_to_index].get("msg_id")
+            if prev_msg_id:
+                reply_to_id = prev_msg_id
+
+        sent = None
         if channel_peer:
             from telethon.tl.functions.channels import JoinChannelRequest
 
             if disc_group_entity is not None and disc_linked_msg_id is not None:
-                # Send directly to discussion group as reply to the linked message.
-                # disc_group_entity was resolved by the fetch client — its access_hash
-                # is per-account, so we re-resolve it for THIS client after joining.
+                # disc_group_entity access_hash is per-account; re-resolve for this client.
                 disc_group_id = disc_group_entity.id
                 try:
                     await client(JoinChannelRequest(disc_group_entity))
@@ -346,19 +370,24 @@ async def _post_comment(
                     my_disc = await client.get_entity(int(f"-100{disc_group_id}"))
                 except Exception:
                     my_disc = disc_group_entity
-                await client.send_message(my_disc, comment, reply_to=disc_linked_msg_id)
+                sent = await client.send_message(my_disc, comment, reply_to=reply_to_id)
             else:
-                # Fallback: let Telethon route via comment_to (works for standard posts)
                 channel_entity = await client.get_entity(channel_peer)
                 try:
                     await client(JoinChannelRequest(channel_entity))
                 except Exception:
                     pass
-                await client.send_message(channel_entity, comment, comment_to=message_id)
+                sent = await client.send_message(channel_entity, comment, comment_to=message_id)
         else:
-            await client.send_message(message_id, comment)
+            sent = await client.send_message(message_id, comment)
 
-        posted_comments.append(comment)
+        sent_id = sent.id if sent else None
+        posted_comments.append({
+            "text": comment,
+            "msg_id": sent_id,
+            "account_id": account_id,
+            "persona": persona[:80],
+        })
 
         async with async_session_maker() as db:
             db.add(BoostLog(boost_id=boost_id, account_id=account_id,

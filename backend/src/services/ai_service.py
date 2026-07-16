@@ -324,39 +324,64 @@ async def analyze_post_for_boost(post_text: str) -> str:
     return message.content[0].text.strip()
 
 
-# Six distinct comment archetypes to rotate across bot accounts
-_BOOST_STYLES = [
-    {
-        "name": "удивлённый",
-        "instruction": "Короткая эмоциональная реакция удивления — 1 фраза или предложение с вопросом. Можно очень коротко.",
-        "examples": ["Серьёзно? 😳", "Это реально происходит?", "Вот это поворот, не ожидал"],
-    },
-    {
-        "name": "скептик",
-        "instruction": "Лёгкий скептицизм или сомнение — без злобы, просто не веришь до конца. 1 предложение.",
-        "examples": ["Ну посмотрим как оно будет", "Звучит хорошо, главное не только слова", "Интересно надолго ли"],
-    },
-    {
-        "name": "поддерживающий",
-        "instruction": "Согласен или поддерживаешь, но без пафоса и дежурных фраз. По-человечески. 1 предложение.",
-        "examples": ["Ну хоть кто-то в теме идёт", "Да, это нормально на самом деле", "Хорошо что так"],
-    },
-    {
-        "name": "шутник",
-        "instruction": "Найди что-то смешное или ироничное. Короткая шутка или ироничная реплика.",
-        "examples": ["Ну это лор 😂", "Такого не ожидал и никто не ожидал", "Ок теперь всё ясно"],
-    },
-    {
-        "name": "уточняющий",
-        "instruction": "Задай один конкретный вопрос про деталь из поста, которая тебя зацепила. Коротко.",
-        "examples": ["А это надолго?", "И что дальше?", "Это сам решил или предложили?"],
-    },
-    {
-        "name": "нейтральный",
-        "instruction": "Нейтральный комментарий — наблюдение или факт без сильных эмоций. 1 предложение.",
-        "examples": ["Бывает всякое", "Посмотрим что выйдет", "Не первый такой случай"],
-    },
+# Comment format options: (name, instruction, weight)
+_COMMENT_FORMATS = [
+    ("emoji_only",
+     "ТОЛЬКО эмодзи — от 2 до 6 штук подряд, НОЛЬ слов. Выбери под настроение.",
+     10),
+    ("ultra_short",
+     "2–4 слова, без точки, можно с маленькой буквы. Реакция на рефлексе.",
+     15),
+    ("short_casual",
+     "1 предложение. Без точки в конце необязательно. Живо, не официально.",
+     45),
+    ("medium",
+     "1–2 предложения. Можно с эмодзи внутри текста или в конце, можно без. По-человечески.",
+     30),
 ]
+
+_BOOST_SYSTEM = (
+    "Ты пишешь комментарий в Телеграм как обычный русскоязычный пользователь.\n\n"
+    "ЗАПРЕЩЕНО НАВСЕГДА:\n"
+    "• длинное тире (—) — не используй вообще\n"
+    "• 'стоит отметить', 'безусловно', 'действительно', 'следует', 'важно понимать', 'однако', 'тем не менее'\n"
+    "• идеальная пунктуация в каждом предложении\n"
+    "• эмодзи в конце каждого сообщения (только если реально нужно)\n"
+    "• шаблон: реакция + анализ + вопрос\n"
+    "• заглавные буквы в середине без причины\n\n"
+    "РАЗРЕШЕНО И ПРИВЕТСТВУЕТСЯ:\n"
+    "• писать с маленькой буквы\n"
+    "• не ставить точку в конце\n"
+    "• 'ну', 'блин', 'кстати', 'короче', 'вообще', '...'\n"
+    "• сленг: 'орнул', 'капец', 'жесть', 'топ', 'да ладно', 'ой всё', 'лол', 'хаха', 'ужас'\n"
+    "• неполные предложения если так звучит естественно\n"
+    "• иногда только эмодзи или 2 слова\n"
+)
+
+
+async def search_boost_context(post_text: str) -> str:
+    """Search web for context about people/events mentioned in the post."""
+    try:
+        response = await _get_client().messages.create(
+            model=settings.anthropic_model,
+            max_tokens=400,
+            tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 2}],
+            system=(
+                "Найди информацию о людях, событиях или ситуации из текста. "
+                "Верни краткую сводку по-русски: кто эти люди, что за ситуация, "
+                "что о них известно или думают. 2–3 предложения, только факты."
+            ),
+            messages=[{
+                "role": "user",
+                "content": f"Текст поста:\n{post_text[:400]}\n\nЧто известно об этих людях/ситуации?"
+            }],
+        )
+        for block in response.content:
+            if hasattr(block, "text") and block.text:
+                return block.text.strip()
+    except Exception:
+        pass
+    return ""
 
 
 async def generate_boost_comment(
@@ -366,51 +391,65 @@ async def generate_boost_comment(
     own_comments: list[str] | None = None,
     real_comments: list[str] | None = None,
     style_index: int = 0,
-) -> str:
-    """Generate a contextual comment for boosting a Telegram post."""
-    style = _BOOST_STYLES[style_index % len(_BOOST_STYLES)]
+    prev_comments: list[dict] | None = None,
+    extra_context: str = "",
+) -> tuple[str, int | None]:
+    """Generate a contextual comment for boosting a Telegram post.
 
-    post_ctx = f"Пост:\n«{post_text[:500]}»" if post_text.strip() else f"Тема: {topic}"
+    Returns (comment_text, reply_to_index) where reply_to_index is an index
+    into prev_comments (reply to that bot's comment) or None (reply to the post).
+    """
+    # Pick format randomly by weight
+    names, instructions, weights = zip(*_COMMENT_FORMATS)
+    fmt_name, fmt_instruction = random.choices(
+        list(zip(names, instructions)), weights=list(weights)
+    )[0]
+
+    # Decide whether to reply to a previous bot comment (~40% if any exist)
+    reply_to_index: int | None = None
+    reply_target_text: str = ""
+    if prev_comments and fmt_name != "emoji_only" and random.random() < 0.40:
+        reply_to_index = random.randint(0, len(prev_comments) - 1)
+        reply_target_text = prev_comments[reply_to_index].get("text", "")[:150]
+
+    post_ctx = f"Пост:\n«{post_text[:450]}»" if post_text.strip() else f"Тема: {topic}"
+
+    context_block = ""
+    if extra_context:
+        context_block = f"\n\nДополнительный контекст из интернета:\n{extra_context[:300]}"
 
     real_ctx = ""
     if real_comments:
-        joined = "\n".join(f"— {c[:120]}" for c in real_comments[:6])
-        real_ctx = f"\n\nКомментарии которые уже есть под постом:\n{joined}\nТвой должен отличаться по стилю и содержанию от них."
+        joined = "\n".join(f"— {c[:100]}" for c in real_comments[:5])
+        real_ctx = f"\n\nДругие комментарии под постом (отличайся от них):\n{joined}"
 
     own_ctx = ""
     if own_comments:
-        own_ctx = f"\n(Ты уже писал здесь: «{' / '.join(own_comments[-2:])}» — не повторяй эти мысли.)"
+        own_ctx = f"\n(Ты уже писал тут: «{' / '.join(own_comments[-2:])}» — не повторяй.)"
+
+    if reply_target_text:
+        task = (
+            f"Ты отвечаешь на комментарий:\n«{reply_target_text}»\n\n"
+            f"Формат: {fmt_instruction}"
+        )
+    else:
+        task = f"Формат твоего комментария: {fmt_instruction}"
 
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
-        max_tokens=100,
-        system=(
-            "Ты — живой человек, пишешь комментарий под постом в Телеграм-канале.\n"
-            f"Твоя персона: {persona}\n\n"
-            "СТРОГИЕ ПРАВИЛА:\n"
-            "• Только русский, разговорный стиль, как обычный человек в интернете\n"
-            "• Максимум 1-2 предложения. Можно 3-7 слов — это нормально\n"
-            "• ЗАПРЕЩЕНО: 'вот это поворот', 'это классика', 'вопрос только в том', 'стоит отметить'\n"
-            "• ЗАПРЕЩЁН шаблон: реакция → анализ → вопрос про ресурсы/поддержку\n"
-            "• Используй конкретные детали из поста — имена, факты — не общие слова\n"
-            "• Если знаешь что-то о людях или событиях из поста — используй это знание\n"
-            "• Без заглавных букв в середине предложения без причины, без лишних эмодзи"
-        ),
+        max_tokens=120,
+        system=f"{_BOOST_SYSTEM}\nТвоя персона: {persona[:300]}",
         messages=[{
             "role": "user",
             "content": (
-                f"{post_ctx}\n\n"
-                f"Твой стиль сейчас: {style['name']} — {style['instruction']}\n"
-                f"Примеры тона (не копируй, только для понимания): {' | '.join(style['examples'])}\n"
-                f"{real_ctx}{own_ctx}\n\n"
-                "Напиши комментарий:"
+                f"{post_ctx}{context_block}{real_ctx}{own_ctx}\n\n"
+                f"{task}\n\n"
+                "Напиши:"
             )
         }],
     )
     result = message.content[0].text.strip().strip('"').strip("'")
-    if result and result[0].islower():
-        result = result[0].upper() + result[1:]
-    return result
+    return result, reply_to_index
 
 
 async def improve_text(text: str, instruction: str) -> str:
