@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     telegram_api_id: int
     telegram_api_hash: str
 
+    # API key required in X-API-Key header for all requests (empty = disabled)
+    api_key: str = ""
+
     # Encryption key for storing session strings in DB (32 hex chars)
     session_encryption_key: str = "change-me-32-chars-exactly-here!!"
 

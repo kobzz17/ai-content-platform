@@ -1,8 +1,13 @@
 const BASE = "/api";
+const _API_KEY = import.meta.env.VITE_API_KEY ?? "";
+
+function authHeaders(): Record<string, string> {
+  return _API_KEY ? { "X-API-Key": _API_KEY } : {};
+}
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     ...opts,
   });
   if (!res.ok) {
@@ -31,7 +36,7 @@ export const api = {
   importBatch: (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    return fetch(`${BASE}/accounts/import-batch`, { method: "POST", body: form })
+    return fetch(`${BASE}/accounts/import-batch`, { method: "POST", body: form, headers: authHeaders() })
       .then(async (res) => {
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
@@ -46,7 +51,7 @@ export const api = {
     form.append("file", file);
     if (passcode) form.append("passcode", passcode);
     if (proxy) form.append("proxy", proxy);
-    return fetch(`${BASE}/accounts/import-tdata`, { method: "POST", body: form })
+    return fetch(`${BASE}/accounts/import-tdata`, { method: "POST", body: form, headers: authHeaders() })
       .then(async (res) => {
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
@@ -66,7 +71,7 @@ export const api = {
     const form = new FormData();
     files.forEach((f) => form.append("files", f));
     if (proxy) form.append("proxy", proxy);
-    return fetch(`${BASE}/accounts/import-session-files`, { method: "POST", body: form })
+    return fetch(`${BASE}/accounts/import-session-files`, { method: "POST", body: form, headers: authHeaders() })
       .then(async (res) => {
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
