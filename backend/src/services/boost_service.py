@@ -348,6 +348,18 @@ async def _boost_campaign(boost_id: int) -> None:
 
     await asyncio.gather(*sub_tasks, return_exceptions=True)
 
+    # Phase 2: continuation replies + emoji reactions
+    if len(posted_comments) >= 2:
+        await asyncio.gather(
+            _continuation_phase(
+                boost_id, posted_comments, bot_tasks,
+                disc_group_entity, disc_linked_msg_id,
+                post_text, style_memory,
+            ),
+            _add_reactions(boost_id, posted_comments, bot_tasks, disc_group_entity),
+            return_exceptions=True,
+        )
+
     async with async_session_maker() as db:
         b = await db.get(BoostTask, boost_id)
         if b and b.status == BoostStatus.running:
@@ -355,6 +367,182 @@ async def _boost_campaign(boost_id: int) -> None:
             await db.commit()
 
     logger.info("Boost %d done — %d accounts, %d comments", boost_id, n, len(posted_comments))
+
+
+async def _continuation_phase(
+    boost_id: int,
+    posted_comments: list[dict],
+    bot_tasks: list,
+    disc_group_entity,
+    disc_linked_msg_id: int | None,
+    post_text: str,
+    style_memory: dict[int, list[str]],
+) -> None:
+    """2-3 bots come back and continue the discussion with replies to each other."""
+    from src.services.ai_service import generate_continuation_comment
+    from telethon.tl.functions.channels import JoinChannelRequest
+
+    # Wait before continuation (5-12 minutes after last initial comment)
+    await asyncio.sleep(random.uniform(300, 720))
+
+    async with async_session_maker() as db:
+        b = await db.get(BoostTask, boost_id)
+        if not b or b.status != BoostStatus.running:
+            return
+
+    # Pick 2-3 bots for continuation (prefer bots with opposing stances)
+    eligible = [bt for bt in bot_tasks if any(c["account_id"] == bt.account_id for c in posted_comments)]
+    n_cont = min(random.randint(2, 3), len(eligible))
+    participants = random.sample(eligible, n_cont)
+
+    for bt in participants:
+        # Each participant waits a bit between each other
+        await asyncio.sleep(random.uniform(60, 180))
+
+        async with async_session_maker() as db:
+            b = await db.get(BoostTask, boost_id)
+            if not b or b.status != BoostStatus.running:
+                break
+            acc = await db.get(Account, bt.account_id)
+        if not acc:
+            continue
+
+        # Find my stance from my initial comment
+        my_entry = next((c for c in posted_comments if c["account_id"] == bt.account_id), None)
+        own_stance = my_entry.get("stance", "neutral") if my_entry else "neutral"
+
+        # Pick a target comment from someone else
+        targets = [c for c in posted_comments if c["account_id"] != bt.account_id and c.get("msg_id")]
+        if not targets:
+            continue
+
+        # Prefer opposite stances for drama, same stance for agreement
+        opposite = {"positive": "critical", "critical": "positive"}
+        preferred = [t for t in targets if t.get("stance") == opposite.get(own_stance)]
+        target = random.choice(preferred) if preferred and random.random() < 0.6 else random.choice(targets)
+
+        try:
+            client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
+            comment = await generate_continuation_comment(
+                post_text=post_text,
+                persona=bt.persona,
+                own_stance=own_stance,
+                target_comment=target["text"],
+                target_stance=target.get("stance", "neutral"),
+                all_comments=[c["text"] for c in posted_comments],
+                style_examples=style_memory.get(bt.account_id, []),
+            )
+
+            if disc_group_entity is not None and disc_linked_msg_id is not None:
+                disc_group_id = disc_group_entity.id
+                try:
+                    await client(JoinChannelRequest(disc_group_entity))
+                except Exception:
+                    pass
+                try:
+                    my_disc = await client.get_entity(int(f"-100{disc_group_id}"))
+                except Exception:
+                    my_disc = disc_group_entity
+                sent = await client.send_message(my_disc, comment, reply_to=target["msg_id"])
+            else:
+                channel_entity = await client.get_entity(disc_group_entity)
+                sent = await client.send_message(channel_entity, comment, comment_to=disc_linked_msg_id)
+
+            sent_id = sent.id if sent else None
+            posted_comments.append({
+                "text": comment,
+                "msg_id": sent_id,
+                "account_id": bt.account_id,
+                "persona": bt.persona[:80],
+                "stance": own_stance,
+            })
+
+            async with async_session_maker() as db:
+                db.add(BoostLog(boost_id=boost_id, account_id=bt.account_id,
+                                action="commented", text=comment))
+                b = await db.get(BoostTask, boost_id)
+                if b:
+                    b.comments_posted += 1
+                await db.commit()
+
+            logger.info("Boost %d: acc %d continuation reply (stance=%s→%s)",
+                        boost_id, bt.account_id, own_stance, target.get("stance", "?"))
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Boost %d: continuation reply failed acc %d: %s", boost_id, bt.account_id, e)
+
+
+_REACTION_EMOJIS = ["❤", "👍", "🔥", "😂", "👏", "😮", "🤔", "💀", "🫡", "❤‍🔥"]
+
+
+async def _add_reactions(
+    boost_id: int,
+    posted_comments: list[dict],
+    bot_tasks: list,
+    disc_group_entity,
+) -> None:
+    """Some bots randomly react to each other's comments."""
+    from telethon.tl.functions.messages import SendReactionRequest
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.tl.types import ReactionEmoji
+
+    if disc_group_entity is None:
+        return
+
+    # Wait until a few initial comments are up
+    await asyncio.sleep(random.uniform(120, 300))
+
+    async with async_session_maker() as db:
+        b = await db.get(BoostTask, boost_id)
+        if not b or b.status != BoostStatus.running:
+            return
+
+    disc_group_id = disc_group_entity.id
+    # ~60% of bots add 1-2 reactions
+    reactors = [bt for bt in bot_tasks if random.random() < 0.6]
+
+    for bt in reactors:
+        await asyncio.sleep(random.uniform(30, 90))
+        targets = [c for c in posted_comments
+                   if c["account_id"] != bt.account_id and c.get("msg_id")]
+        if not targets:
+            continue
+        # React to 1-2 comments
+        to_react = random.sample(targets, min(random.randint(1, 2), len(targets)))
+        try:
+            async with async_session_maker() as db:
+                acc = await db.get(Account, bt.account_id)
+            if not acc:
+                continue
+            client = await sm.get_client(acc.id, acc.session_string, acc.proxy)
+            try:
+                await client(JoinChannelRequest(disc_group_entity))
+            except Exception:
+                pass
+            try:
+                my_disc = await client.get_entity(int(f"-100{disc_group_id}"))
+            except Exception:
+                my_disc = disc_group_entity
+
+            for target in to_react:
+                emoji = random.choice(_REACTION_EMOJIS)
+                try:
+                    await client(SendReactionRequest(
+                        peer=my_disc,
+                        msg_id=target["msg_id"],
+                        reaction=[ReactionEmoji(emoticon=emoji)],
+                    ))
+                    logger.info("Boost %d: acc %d reacted %s to msg %d",
+                                boost_id, bt.account_id, emoji, target["msg_id"])
+                    await asyncio.sleep(random.uniform(5, 20))
+                except Exception as e:
+                    logger.info("Boost %d: reaction skipped: %s", boost_id, e)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("Boost %d: reactions failed acc %d: %s", boost_id, bt.account_id, e)
 
 
 async def _post_comment(
@@ -449,6 +637,7 @@ async def _post_comment(
             "msg_id": sent_id,
             "account_id": account_id,
             "persona": persona[:80],
+            "stance": stance,
         })
 
         async with async_session_maker() as db:

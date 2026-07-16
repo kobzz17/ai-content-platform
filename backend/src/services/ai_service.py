@@ -368,6 +368,61 @@ _BOOST_SYSTEM = (
 )
 
 
+async def generate_continuation_comment(
+    post_text: str,
+    persona: str,
+    own_stance: str,
+    target_comment: str,
+    target_stance: str,
+    all_comments: list[str],
+    style_examples: list[str] | None = None,
+) -> str:
+    """Generate a follow-up reply that continues the discussion thread naturally."""
+    stance_desc = _STANCE_INSTRUCTIONS.get(own_stance, "")
+
+    # Describe the interaction dynamic
+    opposite = {"positive", "critical"}
+    if own_stance in opposite and target_stance in opposite and own_stance != target_stance:
+        dynamic = "вы на противоположных позициях — продолжи спор, возрази или стой на своём"
+    elif own_stance == target_stance:
+        dynamic = "вы похожих взглядов — поддержи, добавь что-то своё, укрепи позицию"
+    elif own_stance == "neutral":
+        dynamic = "ты нейтральный — попробуй примирить спорящих или вынеси наблюдение"
+    elif own_stance == "ironic":
+        dynamic = "подколи иронично — не зло, но с сарказмом"
+    else:
+        dynamic = "отреагируй естественно на то что написали"
+
+    style_ctx = ""
+    if style_examples:
+        joined = " / ".join(f'«{c[:60]}»' for c in style_examples[-4:])
+        style_ctx = f"\nТвой обычный стиль письма: {joined}"
+
+    others = "\n".join(f"— {c[:80]}" for c in all_comments[-6:])
+
+    message = await _get_client().messages.create(
+        model=settings.anthropic_model,
+        max_tokens=100,
+        system=(
+            f"{_BOOST_SYSTEM}\n"
+            f"Твоя персона: {persona[:200]}\n"
+            f"Твоя позиция: {stance_desc}"
+        ),
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Пост: «{post_text[:300]}»\n\n"
+                f"Комментарии в треде:\n{others}\n\n"
+                f"Ты отвечаешь на:\n«{target_comment[:200]}»\n\n"
+                f"Динамика: {dynamic}\n"
+                f"Формат: 1 предложение или 2-4 слова, разговорно, без точки в конце.{style_ctx}\n\n"
+                "Напиши:"
+            )
+        }],
+    )
+    return message.content[0].text.strip().strip('"').strip("'")
+
+
 async def search_boost_context(post_text: str) -> str:
     """Search web for context about people/events mentioned in the post."""
     try:
