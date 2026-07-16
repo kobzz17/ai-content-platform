@@ -335,12 +335,18 @@ async def _post_comment(
 
             if disc_group_entity is not None and disc_linked_msg_id is not None:
                 # Send directly to discussion group as reply to the linked message.
-                # This works for both new posts and old posts where replies=None.
+                # disc_group_entity was resolved by the fetch client — its access_hash
+                # is per-account, so we re-resolve it for THIS client after joining.
+                disc_group_id = disc_group_entity.id
                 try:
                     await client(JoinChannelRequest(disc_group_entity))
                 except Exception:
                     pass
-                await client.send_message(disc_group_entity, comment, reply_to=disc_linked_msg_id)
+                try:
+                    my_disc = await client.get_entity(int(f"-100{disc_group_id}"))
+                except Exception:
+                    my_disc = disc_group_entity
+                await client.send_message(my_disc, comment, reply_to=disc_linked_msg_id)
             else:
                 # Fallback: let Telethon route via comment_to (works for standard posts)
                 channel_entity = await client.get_entity(channel_peer)
