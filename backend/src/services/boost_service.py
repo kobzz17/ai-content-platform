@@ -109,10 +109,13 @@ async def _find_disc_thread(
             getattr(fwd_ch, "channel_id", None) == channel_id
             and getattr(fwd, "channel_post", None) == message_id
         ):
-            async for cmsg in client.iter_messages(disc_entity, reply_to=fwd_msg.id, limit=15):
-                txt = getattr(cmsg, "message", None) or ""
-                if txt.strip():
-                    existing.append(txt[:200])
+            try:
+                async for cmsg in client.iter_messages(disc_entity, reply_to=fwd_msg.id, limit=15):
+                    txt = getattr(cmsg, "message", None) or ""
+                    if txt.strip():
+                        existing.append(txt[:200])
+            except Exception as e:
+                logger.info("_find_disc_thread: skipping existing comment read: %s", e)
             logger.info("_find_disc_thread: method2 OK linked_msg=%d existing=%d",
                         fwd_msg.id, len(existing))
             return disc_entity, fwd_msg.id, existing
