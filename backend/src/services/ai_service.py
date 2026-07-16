@@ -1,8 +1,14 @@
+import re
 import random
 import anthropic
 from src.config import settings
 
 _client: anthropic.AsyncAnthropic | None = None
+
+
+def _strip_em_dash(text: str) -> str:
+    """Hard-remove em-dashes that Claude occasionally generates despite instructions."""
+    return re.sub(r'\s*—\s*', ' ', text).strip()
 
 
 def _get_client() -> anthropic.AsyncAnthropic:
@@ -328,7 +334,9 @@ async def analyze_post_for_boost(post_text: str) -> str:
 # Assigned per-bot at campaign start to guarantee diversity — no random selection here
 _COMMENT_FORMATS = [
     ("emoji_only",
-     "ТОЛЬКО эмодзи — 3–5 штук. НОЛЬ слов. Выбирай эмодзи РАЗНООБРАЗНЫЕ — НЕ копируй то что видишь на фото или в посте."),
+     "ТОЛЬКО эмодзи, НОЛЬ слов. Выбери 1-4 эмодзи которые ПОДХОДЯТ по смыслу и настроению: "
+     "смешно — 😂, восхищение — ❤🔥, скепсис — 🤔, негатив — 💀😬, удивление — 😱. "
+     "Количество от 1 до 4 — выбирай рандомно. НЕ бери эмодзи с фото или из поста."),
     ("ultra_short",
      "2–4 слова, без точки, можно с маленькой буквы. Реакция на рефлексе."),
     ("short_casual",
@@ -354,8 +362,9 @@ _STANCE_INSTRUCTIONS = {
 _BOOST_SYSTEM = (
     "Ты пишешь комментарий в Телеграм как обычный русскоязычный пользователь.\n\n"
     "ЗАПРЕЩЕНО:\n"
-    "• длинное тире (—)\n"
-    "• 'стоит отметить', 'безусловно', 'действительно', 'следует', 'важно понимать', 'однако', 'тем не менее'\n"
+    "• длинное тире (—) — НИКОГДА, ни при каких условиях\n"
+    "• выдуманные слова и бессмыслица — мысль ВСЕГДА должна быть понятной\n"
+    "• 'стоит отметить', 'безусловно', 'действительно', 'следует', 'важно понимать', 'однако'\n"
     "• идеальная пунктуация в каждом предложении\n"
     "• шаблон: реакция + анализ + вопрос\n"
     "• повторять эмодзи которые уже есть в посте, на фото или в других комментариях\n\n"
@@ -364,7 +373,7 @@ _BOOST_SYSTEM = (
     "• не ставить точку в конце\n"
     "• 'ну', 'блин', 'кстати', 'короче', 'вообще', '...'\n"
     "• сленг: 'орнул', 'капец', 'жесть', 'топ', 'да ладно', 'ой всё', 'лол', 'хаха'\n"
-    "• неполные предложения если звучит естественно\n"
+    "• неполные предложения если звучит естественно и логично\n"
 )
 
 
@@ -420,7 +429,7 @@ async def generate_continuation_comment(
             )
         }],
     )
-    return message.content[0].text.strip().strip('"').strip("'")
+    return _strip_em_dash(message.content[0].text.strip().strip('"').strip("'"))
 
 
 async def search_boost_context(post_text: str) -> str:
@@ -559,7 +568,7 @@ async def generate_boost_comment(
         system=f"{_BOOST_SYSTEM}\nТвоя персона: {persona[:300]}",
         messages=[{"role": "user", "content": user_content}],
     )
-    result = message.content[0].text.strip().strip('"').strip("'")
+    result = _strip_em_dash(message.content[0].text.strip().strip('"').strip("'"))
     return result, reply_to_index
 
 
