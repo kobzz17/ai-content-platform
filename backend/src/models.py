@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import String, Text, DateTime, Boolean, Integer, BigInteger, ForeignKey, Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 from src.database import Base
+from src.crypto import EncryptedText
 
 
 class WarmupStatus(str, enum.Enum):
@@ -32,7 +33,7 @@ class Account(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     label: Mapped[str] = mapped_column(String(255))
     phone: Mapped[str] = mapped_column(String(32), unique=True)
-    session_string: Mapped[str] = mapped_column(Text)
+    session_string: Mapped[str] = mapped_column(EncryptedText)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     first_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
