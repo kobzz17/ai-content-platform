@@ -45,7 +45,7 @@ async def start_all_running() -> None:
 
 
 async def _find_disc_thread(
-    client, channel_entity, message_id: int
+    client, channel_entity, message_id: int, post_date=None
 ) -> tuple[object | None, int | None, list[str]]:
     """Find the discussion thread for a channel post.
 
@@ -54,19 +54,22 @@ async def _find_disc_thread(
 
     Two-method approach:
     1. GetDiscussionMessageRequest — works for posts where replies.comments=True
-    2. Manual fwd_from search — works for older posts where replies=None but thread exists
+    2. fwd_from search near post_date — works for older posts where replies=None
     """
+    from datetime import timedelta
     from telethon.tl.functions.messages import GetDiscussionMessageRequest
     from telethon.tl.functions.channels import GetFullChannelRequest, JoinChannelRequest
 
     existing: list[str] = []
 
-    # Method 1: standard API
+    # Method 1: standard API (works for posts with replies.comments=True)
     try:
         disc = await client(GetDiscussionMessageRequest(peer=channel_entity, msg_id=message_id))
         if disc.chats and disc.messages:
             disc_group = disc.chats[0]
             disc_msg_id = disc.messages[0].id
+            # Re-resolve to ensure entity is cached
+            disc_group = await client.get_entity(disc_group)
             async for cmsg in client.iter_messages(disc_group, reply_to=disc_msg_id, limit=15):
                 txt = getattr(cmsg, "message", None) or ""
                 if txt.strip():
@@ -75,7 +78,7 @@ async def _find_disc_thread(
     except Exception as e:
         logger.debug("_find_disc_thread: GetDiscussionMessage failed: %s", e)
 
-    # Method 2: find linked message manually in discussion group
+    # Method 2: find linked message via fwd_from search near post date
     try:
         full = await client(GetFullChannelRequest(channel_entity))
         linked_chat_id = full.full_chat.linked_chat_id
@@ -86,13 +89,23 @@ async def _find_disc_thread(
         if not disc_chat:
             return None, None, []
 
+        # Join and re-resolve so Telethon can query messages
         try:
             await client(JoinChannelRequest(disc_chat))
         except Exception:
             pass
+        disc_entity = await client.get_entity(disc_chat)
 
+        # Search near the post date to avoid scanning the entire group history
         channel_id = channel_entity.id
-        async for msg in client.iter_messages(disc_chat, limit=100):
+        if post_date:
+            # offset_date returns messages BEFORE that time (newest-first),
+            # so post_date + 5min gets us right to the linked message
+            search_kwargs = {"offset_date": post_date + timedelta(minutes=5), "limit": 20}
+        else:
+            search_kwargs = {"limit": 200}
+
+        async for msg in client.iter_messages(disc_entity, **search_kwargs):
             fwd = getattr(msg, "fwd_from", None)
             if not fwd:
                 continue
@@ -101,13 +114,12 @@ async def _find_disc_thread(
                 getattr(fwd_ch, "channel_id", None) == channel_id
                 and getattr(fwd, "channel_post", None) == message_id
             ):
-                # Found the linked message — get existing replies
-                async for cmsg in client.iter_messages(disc_chat, reply_to=msg.id, limit=15):
+                async for cmsg in client.iter_messages(disc_entity, reply_to=msg.id, limit=15):
                     txt = getattr(cmsg, "message", None) or ""
                     if txt.strip():
                         existing.append(txt[:200])
                 logger.info("_find_disc_thread: found via fwd search, linked_msg=%d", msg.id)
-                return disc_chat, msg.id, existing
+                return disc_entity, msg.id, existing
     except Exception as e:
         logger.debug("_find_disc_thread: manual search failed: %s", e)
 
@@ -183,7 +195,8 @@ async def _boost_campaign(boost_id: int) -> None:
                         post_text = text[:600]
 
                     disc_group_entity, disc_linked_msg_id, real_existing_comments = (
-                        await _find_disc_thread(client, channel_entity, message_id)
+                        await _find_disc_thread(client, channel_entity, message_id,
+                                                post_date=getattr(msg, "date", None))
                     )
                     logger.info(
                         "Boost %d: post %d chars, disc_thread=%s, existing=%d from %s",
