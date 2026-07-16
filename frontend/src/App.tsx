@@ -1,15 +1,21 @@
 import { useEffect, useState } from "react";
-import { api, Account } from "./api/client";
+import { api, Account, getStoredApiKey, clearStoredApiKey } from "./api/client";
 import { AccountSidebar } from "./components/AccountSidebar";
 import { ChatView } from "./components/ChatView";
 import { AIPanel } from "./components/AIPanel";
 import { AutomationView } from "./components/AutomationView";
 import WarmupView from "./components/WarmupView";
 import ProxyView from "./components/ProxyView";
+import { LoginPage } from "./components/LoginPage";
 
 type Tab = "chats" | "automation" | "warmup" | "proxies";
 
 export default function App() {
+  const [authed, setAuthed] = useState(() => !!getStoredApiKey());
+
+  if (!authed) {
+    return <LoginPage onLogin={() => setAuthed(true)} />;
+  }
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);

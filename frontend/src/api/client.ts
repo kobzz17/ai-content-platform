@@ -1,9 +1,20 @@
-/// <reference types="vite/client" />
 const BASE = "/api";
-const _API_KEY = import.meta.env.VITE_API_KEY ?? "";
+
+export function getStoredApiKey(): string {
+  return localStorage.getItem("api_key") ?? "";
+}
+
+export function setStoredApiKey(key: string): void {
+  localStorage.setItem("api_key", key);
+}
+
+export function clearStoredApiKey(): void {
+  localStorage.removeItem("api_key");
+}
 
 function authHeaders(): Record<string, string> {
-  return _API_KEY ? { "X-API-Key": _API_KEY } : {};
+  const key = getStoredApiKey();
+  return key ? { "X-API-Key": key } : {};
 }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
@@ -11,6 +22,11 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...authHeaders() },
     ...opts,
   });
+  if (res.status === 401) {
+    clearStoredApiKey();
+    window.location.reload();
+    throw new Error("Unauthorized");
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || "Request failed");
