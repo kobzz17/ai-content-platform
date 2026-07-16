@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 const BASE = "/api";
 const _API_KEY = import.meta.env.VITE_API_KEY ?? "";
 
