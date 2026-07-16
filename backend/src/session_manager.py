@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 # account_id → active TelegramClient
 _clients: dict[int, TelegramClient] = {}
+# per-account lock to prevent concurrent connect() for the same account_id
+_connect_locks: dict[int, asyncio.Lock] = {}
 # phone → temp client during auth flow
 _auth_clients: dict[str, TelegramClient] = {}
 # phone → phone_code_hash during auth
@@ -52,10 +54,17 @@ def _parse_proxy(proxy_url: str) -> tuple | None:
 
 
 async def get_client(account_id: int, session_string: str, proxy: str | None = None) -> TelegramClient:
-    if account_id not in _clients:
+    if account_id in _clients:
+        return _clients[account_id]
+    # Per-account lock prevents two concurrent callers from both creating a client
+    lock = _connect_locks.setdefault(account_id, asyncio.Lock())
+    async with lock:
+        if account_id in _clients:  # double-check after acquiring lock
+            return _clients[account_id]
         client = _make_client(session_string, proxy)
         await client.connect()
         if not await client.is_user_authorized():
+            await client.disconnect()
             raise RuntimeError(f"Account {account_id} session expired, needs re-auth")
         _clients[account_id] = client
         logger.info("Connected account %d", account_id)

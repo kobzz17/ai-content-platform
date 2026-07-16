@@ -354,7 +354,7 @@ async def _boost_campaign(boost_id: int) -> None:
             _continuation_phase(
                 boost_id, posted_comments, bot_tasks,
                 disc_group_entity, disc_linked_msg_id,
-                post_text, style_memory,
+                post_text, style_memory, channel_peer,
             ),
             _add_reactions(boost_id, posted_comments, bot_tasks, disc_group_entity),
             return_exceptions=True,
@@ -377,6 +377,7 @@ async def _continuation_phase(
     disc_linked_msg_id: int | None,
     post_text: str,
     style_memory: dict[int, list[str]],
+    channel_peer: str | None = None,
 ) -> None:
     """2-3 bots come back and continue the discussion with replies to each other."""
     from src.services.ai_service import generate_continuation_comment
@@ -445,8 +446,9 @@ async def _continuation_phase(
                     my_disc = disc_group_entity
                 sent = await client.send_message(my_disc, comment, reply_to=target["msg_id"])
             else:
-                channel_entity = await client.get_entity(disc_group_entity)
-                sent = await client.send_message(channel_entity, comment, comment_to=disc_linked_msg_id)
+                # No discussion group — reply directly to the channel post
+                ch_entity = await client.get_entity(channel_peer if channel_peer else disc_linked_msg_id)
+                sent = await client.send_message(ch_entity, comment, comment_to=disc_linked_msg_id)
 
             sent_id = sent.id if sent else None
             posted_comments.append({

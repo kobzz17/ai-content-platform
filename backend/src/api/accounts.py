@@ -89,7 +89,7 @@ class BatchImportResult(BaseModel):
     failed: list[dict] = []
 
 
-_MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB
+_MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 _VERIFY_CONCURRENCY = 10  # сколько сессий проверяем параллельно
 
 
@@ -110,7 +110,7 @@ async def import_batch(
     import json
     raw_bytes = await file.read(_MAX_UPLOAD_BYTES + 1)
     if len(raw_bytes) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="Файл слишком большой (макс. 500 МБ)")
+        raise HTTPException(status_code=413, detail="Файл слишком большой (макс. 50 МБ)")
     content = raw_bytes.decode("utf-8").strip()
 
     # Parse input

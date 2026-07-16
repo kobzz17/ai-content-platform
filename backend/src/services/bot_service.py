@@ -13,19 +13,20 @@ logger = logging.getLogger(__name__)
 
 _running: dict[int, asyncio.Task] = {}
 
-# Shared: when did last message appear in the group (any bot)
-_last_group_activity: datetime = datetime.utcnow() - timedelta(hours=12)
+# Per-chat: when did last message appear in the group (any bot)
+# Keyed by chat_id so activity in one group doesn't suppress another
+_last_group_activity: dict[int, datetime] = {}
 _BURST_WINDOW_MIN = 30
 
-# Global minimum gap between any two bot messages (prevents flooding)
-_last_bot_post: datetime = datetime.utcnow() - timedelta(hours=12)
+# Per-chat minimum gap between any two bot messages (prevents flooding)
+_last_bot_post: dict[int, datetime] = {}
 _MIN_BOT_INTERVAL_MIN = 8
 
 # Track which messages each bot has already reacted to
 _group_reacted: dict[int, set[int]] = {}  # task_id -> set of msg_ids
 
-# Track how many bots have already answered each question (msg_id -> count)
-_question_replies: dict[int, int] = {}
+# Per-chat: how many bots have already answered each question (msg_id -> count)
+_question_replies: dict[int, dict[int, int]] = {}  # chat_id -> {msg_id -> count}
 _MAX_QUESTION_REPLIES = 2  # at most 2 bots answer the same question
 _QUESTION_RESPONSE_CHANCE = 55  # % chance any single bot answers a given question
 
@@ -203,7 +204,7 @@ async def _react_to_group_message(client, task_id: int, chat_peer, messages: lis
 
 
 async def _bot_loop(task_id: int) -> None:
-    global _last_group_activity, _last_bot_post
+    # (no global needed — _last_group_activity and _last_bot_post are now dicts keyed by chat_id)
     from src.services.ai_service import generate_bot_reply, generate_new_topic
 
     last_msg_id: int = 0
@@ -284,7 +285,7 @@ async def _bot_loop(task_id: int) -> None:
             last_msg_id = new_max_id
 
             if new_messages:
-                _last_group_activity = datetime.utcnow()
+                _last_group_activity[task.chat_id] = datetime.utcnow()
                 # Any new message keeps the active topic alive
                 if task.chat_id in _group_active_topic:
                     _group_active_topic[task.chat_id]["last_activity_at"] = datetime.utcnow()
@@ -298,16 +299,18 @@ async def _bot_loop(task_id: int) -> None:
                 last_reacted = datetime.utcnow()
 
             # ── Reply to messages ─────────────────────────────────────────
-            minutes_since_activity = (datetime.utcnow() - _last_group_activity).total_seconds() / 60
+            _fallback_dt = datetime.utcnow() - timedelta(hours=12)
+            minutes_since_activity = (datetime.utcnow() - _last_group_activity.get(task.chat_id, _fallback_dt)).total_seconds() / 60
             in_burst = minutes_since_activity < _BURST_WINDOW_MIN
             effective_prob = task.reply_probability if in_burst else max(task.reply_probability // 6, 3)
 
             since_last_reply = (datetime.utcnow() - last_replied).total_seconds() / 60
-            since_last_bot = (datetime.utcnow() - _last_bot_post).total_seconds() / 60
+            since_last_bot = (datetime.utcnow() - _last_bot_post.get(task.chat_id, _fallback_dt)).total_seconds() / 60
 
             # Check for unanswered questions first (fast path)
+            chat_q = _question_replies.setdefault(task.chat_id, {})
             questions = [m for m in new_messages if m.text and "?" in m.text
-                         and _question_replies.get(m.id, 0) < _MAX_QUESTION_REPLIES]
+                         and chat_q.get(m.id, 0) < _MAX_QUESTION_REPLIES]
             # Not every bot responds to every question — adds natural variation
             has_open_question = bool(questions) and random.randint(1, 100) <= _QUESTION_RESPONSE_CHANCE
 
@@ -370,20 +373,19 @@ async def _bot_loop(task_id: int) -> None:
                 # Questions always reply-thread; others 70%
                 reply_to_id = trigger.id if (is_question or random.randint(1, 100) <= 70) else None
                 await client.send_message(chat_peer, reply, reply_to=reply_to_id)
-                _last_group_activity = datetime.utcnow()
-                _last_bot_post = datetime.utcnow()
+                _last_group_activity[task.chat_id] = datetime.utcnow()
+                _last_bot_post[task.chat_id] = datetime.utcnow()
                 # Save to per-bot memory and update topic activity
                 _bot_memory.setdefault(task_id, deque(maxlen=300)).append(reply)
                 if task.chat_id in _group_active_topic:
                     _group_active_topic[task.chat_id]["last_activity_at"] = datetime.utcnow()
 
                 if is_question:
-                    _question_replies[trigger.id] = _question_replies.get(trigger.id, 0) + 1
-                    # Keep dict bounded
-                    if len(_question_replies) > 500:
-                        oldest = list(_question_replies.keys())[:200]
-                        for k in oldest:
-                            _question_replies.pop(k, None)
+                    chat_q[trigger.id] = chat_q.get(trigger.id, 0) + 1
+                    # Keep per-chat dict bounded
+                    if len(chat_q) > 500:
+                        for k in list(chat_q.keys())[:200]:
+                            chat_q.pop(k, None)
 
                 async with async_session_maker() as db:
                     db.add(BotLog(task_id=task_id, action="replied", text=reply))
@@ -397,7 +399,7 @@ async def _bot_loop(task_id: int) -> None:
                 logger.info("Task %d replied in chat %d (reply_to=%s, question=%s)", task_id, task.chat_id, reply_to_id, is_question)
 
             # ── Proactive: post something new ────────────────────────────
-            since_last_bot_proactive = (datetime.utcnow() - _last_bot_post).total_seconds() / 60
+            since_last_bot_proactive = (datetime.utcnow() - _last_bot_post.get(task.chat_id, _fallback_dt)).total_seconds() / 60
             if (task.proactive_interval and
                     datetime.utcnow() - last_proactive >= timedelta(minutes=task.proactive_interval) and
                     since_last_bot_proactive >= _MIN_BOT_INTERVAL_MIN):
@@ -481,8 +483,8 @@ async def _bot_loop(task_id: int) -> None:
                     elif active_topic:
                         active_topic["last_activity_at"] = datetime.utcnow()
 
-                _last_group_activity = datetime.utcnow()
-                _last_bot_post = datetime.utcnow()
+                _last_group_activity[task.chat_id] = datetime.utcnow()
+                _last_bot_post[task.chat_id] = datetime.utcnow()
 
                 async with async_session_maker() as db:
                     db.add(BotLog(task_id=task_id, action="topic_posted", text=posted_text[:300]))
