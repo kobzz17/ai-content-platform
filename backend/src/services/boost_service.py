@@ -476,7 +476,7 @@ async def _continuation_phase(
             logger.warning("Boost %d: continuation reply failed acc %d: %s", boost_id, bt.account_id, e)
 
 
-_REACTION_EMOJIS = ["❤", "👍", "🔥", "😂", "👏", "😮", "🤔", "💀", "🫡", "❤‍🔥"]
+_REACTION_EMOJIS = ["❤", "👍", "🔥", "😂", "👏", "😮", "🤔", "💀", "🎉", "😍"]
 
 
 async def _add_reactions(
