@@ -393,12 +393,16 @@ async def generate_boost_comment(
     style_index: int = 0,
     prev_comments: list[dict] | None = None,
     extra_context: str = "",
+    media_bytes: bytes | None = None,
+    media_type: str = "image/jpeg",
 ) -> tuple[str, int | None]:
     """Generate a contextual comment for boosting a Telegram post.
 
     Returns (comment_text, reply_to_index) where reply_to_index is an index
     into prev_comments (reply to that bot's comment) or None (reply to the post).
     """
+    import base64
+
     # Pick format randomly by weight
     names, instructions, weights = zip(*_COMMENT_FORMATS)
     fmt_name, fmt_instruction = random.choices(
@@ -435,18 +439,33 @@ async def generate_boost_comment(
     else:
         task = f"Формат твоего комментария: {fmt_instruction}"
 
+    text_prompt = (
+        f"{post_ctx}{context_block}{real_ctx}{own_ctx}\n\n"
+        f"{task}\n\n"
+        "Напиши:"
+    )
+
+    # Build message content — include image if available
+    if media_bytes:
+        user_content = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": base64.b64encode(media_bytes).decode(),
+                },
+            },
+            {"type": "text", "text": text_prompt},
+        ]
+    else:
+        user_content = text_prompt
+
     message = await _get_client().messages.create(
         model=settings.anthropic_model,
         max_tokens=120,
         system=f"{_BOOST_SYSTEM}\nТвоя персона: {persona[:300]}",
-        messages=[{
-            "role": "user",
-            "content": (
-                f"{post_ctx}{context_block}{real_ctx}{own_ctx}\n\n"
-                f"{task}\n\n"
-                "Напиши:"
-            )
-        }],
+        messages=[{"role": "user", "content": user_content}],
     )
     result = message.content[0].text.strip().strip('"').strip("'")
     return result, reply_to_index

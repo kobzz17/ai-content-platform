@@ -159,8 +159,10 @@ async def _boost_campaign(boost_id: int) -> None:
                 await db.commit()
         return
 
-    # Fetch post text and find discussion thread
+    # Fetch post text, media and find discussion thread
     post_text = ""
+    post_media_bytes: bytes | None = None
+    post_media_type: str = "image/jpeg"
     disc_group_entity = None
     disc_linked_msg_id: int | None = None
     real_existing_comments: list[str] = []
@@ -191,6 +193,26 @@ async def _boost_campaign(boost_id: int) -> None:
                     text = (getattr(msg, "message", None) or "").strip()
                     if text:
                         post_text = text[:600]
+                    # Download photo or video thumbnail for visual context
+                    if post_media_bytes is None:
+                        try:
+                            if getattr(msg, "photo", None):
+                                post_media_bytes = await client.download_media(msg.photo, bytes)
+                                post_media_type = "image/jpeg"
+                                logger.info("Boost %d: downloaded photo (%d bytes)",
+                                            boost_id, len(post_media_bytes))
+                            elif getattr(msg, "document", None):
+                                doc = msg.document
+                                thumbs = getattr(doc, "thumbs", None) or []
+                                if thumbs:
+                                    post_media_bytes = await client.download_media(
+                                        doc.thumbs[-1], bytes
+                                    )
+                                    post_media_type = "image/jpeg"
+                                    logger.info("Boost %d: downloaded video thumb (%d bytes)",
+                                                boost_id, len(post_media_bytes))
+                        except Exception as e:
+                            logger.info("Boost %d: media download skipped: %s", boost_id, e)
                 else:
                     fetch_errors.append(f"acc {bt.account_id}: message not found")
                     continue
@@ -291,6 +313,8 @@ async def _boost_campaign(boost_id: int) -> None:
                 real_existing_comments, i,
                 disc_group_entity, disc_linked_msg_id,
                 extra_context=extra_context,
+                media_bytes=post_media_bytes,
+                media_type=post_media_type,
             )
         ))
 
@@ -320,6 +344,8 @@ async def _post_comment(
     disc_group_entity=None,
     disc_linked_msg_id: int | None = None,
     extra_context: str = "",
+    media_bytes: bytes | None = None,
+    media_type: str = "image/jpeg",
 ) -> None:
     from src.services.ai_service import generate_boost_comment
 
@@ -346,6 +372,8 @@ async def _post_comment(
             style_index=style_index,
             prev_comments=list(posted_comments),
             extra_context=extra_context,
+            media_bytes=media_bytes,
+            media_type=media_type,
         )
 
         # Determine which message to reply to
